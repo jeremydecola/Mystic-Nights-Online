@@ -212,10 +212,18 @@ def build_channel_join_ack(data):
 def build_lobby_list_packet():
     """
     Builds a multiplayer lobby list packet for transmission.
-    Status values:
-        0 = 〈비어있음〉 (Empty)
-        1 = 대기중 (Waiting/In Queue)
-        2 = 시작됨 (Started)
+    Entry layout (44 bytes):
+        0x00: uint32 room_id
+        0x04: uint32 cur_players
+        0x08: uint32 max_players
+        0x0C: char[16] name (EUC-KR, padded with \x00)
+        0x1C: uint8 pad1 (b'\x00')
+        0x1D: char[12] password (EUC-KR, padded with \x00)
+                # NOTE: If password is empty, lobby is PUBLIC
+                #       If password is non-empty, lobby is PRIVATE
+        0x29: uint8 pad2 (b'\x00')
+        0x2A: uint8 status (0=〈비어있음〉, 1=대기중, 2=시작됨)
+        0x2B: uint8 pad3 (b'\x00')
     """
     import struct
 
@@ -229,62 +237,69 @@ def build_lobby_list_packet():
             'cur_players': 0,
             'max_players': 4,
             'name': "TestRoom1",
-            'sub': "Public",
-            'status': 1,
+            'password': "",         # PUBLIC lobby (no password)
+            'status': 1,            # 1=대기중 (Waiting/In Queue)
         },
         {
             'room_id': 2,
             'cur_players': 0,
             'max_players': 4,
             'name': "TestRoom2",
-            'sub': "Public",
-            'status': 2,
+            'password': "pw123",    # PRIVATE lobby (password-protected)
+            'status': 2,            # 2=시작됨 (Started)
         },
         # Add more as needed
     ]
 
     lobbies = []
-    entry_struct = '<III16s12s2sbB'
+    entry_struct = '<III16s1s12s1sB1s'  # 44 bytes
 
     for entry in custom_lobbies:
         name = entry['name'].encode('euc-kr', errors='replace')[:16].ljust(16, b'\x00')
-        sub = entry['sub'].encode('euc-kr', errors='replace')[:12].ljust(12, b'\x11')
-        reserved = b'\x00\x00'
+        pad1 = b'\x00'
+        # Always pad password field with \x00 regardless of content
+        password = entry.get('password', '').encode('euc-kr', errors='replace')[:12].ljust(12, b'\x00')
+        pad2 = b'\x00'
         status = int(entry['status'])
-        pad2 = 0
+        pad3 = b'\x00'
+
         packed = struct.pack(
             entry_struct,
             entry['room_id'],
             entry['cur_players'],
             entry['max_players'],
             name,
-            sub,
-            reserved,
+            pad1,
+            password,
+            pad2,
             status,
-            pad2
+            pad3
         )
         lobbies.append({'name': entry['name'], 'status': entry['status'], 'packed': packed})
 
     while len(lobbies) < 20:
         idx = len(lobbies) + 1
         name = f"Lobby{idx}".encode('euc-kr')[:16].ljust(16, b'\x00')
-        sub = b"Public".ljust(12, b'\x11')
-        reserved = b'\x00\x00'
+        pad1 = b'\x00'
+        password = b"".ljust(12, b'\x00')   # PUBLIC (no password)
+        pad2 = b'\x00'
         status = 0
-        pad2 = 0
+        pad3 = b'\x00'
         packed = struct.pack(
             entry_struct,
             idx,
             0,
             4,
             name,
-            sub,
-            reserved,
+            pad1,
+            password,
+            pad2,
             status,
-            pad2
+            pad3
         )
         lobbies.append({'name': f"Lobby{idx}", 'status': status, 'packed': packed})
 
+    # Print lobby table (optional for debugging)
     print_lobby_table(lobbies)
 
     entries = b''.join(l['packed'] for l in lobbies)
@@ -298,12 +313,15 @@ def print_lobby_table(lobbies):
     Status: 0=〈비어있음〉 (Empty), 1=대기중 (Waiting), 2=시작됨 (Started)
     """
     status_map = {0: '〈비어있음〉', 1: '대기중', 2: '시작됨'}
-    print("Idx  Name           Status")
-    print("="*28)
+    print("Idx  Name           Status   Type")
+    print("="*40)
     for i, l in enumerate(lobbies):
         status_text = status_map.get(l['status'], str(l['status']))
-        print(f"{i:2}   {l['name'][:12]:12}   {status_text}")
-
+        # Check if password is set
+        packed_password = l['packed'][21:33]
+        is_private = any(packed_password.strip(b'\x00'))
+        type_text = "Private" if is_private else "Public"
+        print(f"{i:2}   {l['name'][:12]:12}   {status_text:6}  {type_text}")
 
 def send_packet_to_client(session, payload):
     ether = Ether(dst=session["mac"], src=MY_MAC)
@@ -459,7 +477,6 @@ def packet_handler(pkt):
 
 def start_sniffer():
     sniff(filter=f"arp or (tcp port {TCP_PORT} or tcp port {TCP_PORT_CHANNEL})", prn=packet_handler, iface=IFACE, store=0)
-
 
 if __name__ == "__main__":
     print(f"Waiting for connection on {HOST}:{TCP_PORT}")
