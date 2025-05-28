@@ -37,7 +37,6 @@ def kill_process_using_port(port):
     except subprocess.CalledProcessError:
         print(f"No process found using port {port}.")
 
-
 kill_process_using_port(TCP_PORT)
 kill_process_using_port(TCP_PORT_CHANNEL)
 
@@ -64,7 +63,6 @@ def print_server_table(servers):
         status_str = status_map.get(s.get('avail', -1), str(s.get('avail', -1)))
         print("{:<4} {:<16} {:<20} {:<10}".format(idx, s['name'], s['ip_str'], status_str))
     print("-" * 60)
-
 
 def build_server_list_packet():
     import struct
@@ -149,7 +147,6 @@ def build_account_creation_duplicate_id_error():
     header = struct.pack('<HH', packet_id, len(payload))
     return header + payload
 
-
 def build_login_packet():
     packet_id = 0x0bb8
     payload = struct.pack('<BBB', 0x01, 0x00, 0x01)
@@ -212,93 +209,100 @@ def build_channel_join_ack(data):
     header = struct.pack('<HH', packet_id, len(payload))
     return header + payload
 
-def build_lobby_list_packet_old():
+def build_lobby_list_packet():
+    """
+    Builds a multiplayer lobby list packet for transmission.
+    Status values:
+        0 = 〈비어있음〉 (Empty)
+        1 = 대기중 (Waiting/In Queue)
+        2 = 시작됨 (Started)
+    """
     import struct
 
     packet_id = 0xbc8
     flag = 1
     unknown = b'\x00\x00\x00'
 
-    lobbies = [
-        {"name": "TestRoom", "status": 0, "cur": 1, "max": 4, "public": 1},
-        # Add more as needed
-    ]
-
-    max_lobbies = 10
-    while len(lobbies) < max_lobbies:
-        lobbies.append({
-            "name": "<Empty Lobby Slot>",  # filler entry
-            "status": 0,
-            "cur": 0,
-            "max": 4,
-            "public": 1
-        })
-
-    entries = b''
-    for lobby in lobbies:
-        unknown = b'\x00' * 12
-        name = lobby['name'].encode('euc-kr')[:28].ljust(28, b'\x00')
-        status = lobby['status']
-        cur = lobby['cur']
-        maxp = lobby['max']
-        public = lobby['public']
-        entries += struct.pack('<12s28sBBBB', unknown, name, status, cur, maxp, public)
-
-    payload = struct.pack('<B3s', flag, unknown) + entries
-    header = struct.pack('<HH', packet_id, len(payload))
-    return header + payload
-
-def build_lobby_list_packet():
-    import struct
-
-    packet_id = 0xbc8
-    flag = 1
-    unknown = b'\x00\x00\x00'  # same header format
-
-    # Example lobbies: adjust/add more as needed.
-    lobbies = [
+    custom_lobbies = [
         {
             'room_id': 1,
             'cur_players': 0,
             'max_players': 4,
-            'name': "Test Room",     # shown in lobby list
-            'sub': "Public",         # could be anything, not shown
-            'status': 1,             # 0=open, 1=closed/locked?
+            'name': "TestRoom1",
+            'sub': "Public",
+            'status': 1,
         },
-        # Add more lobbies here!
-    ]
-
-    # Pad up to 20 lobbies
-    while len(lobbies) < 20:
-        lobbies.append({
+        {
             'room_id': 2,
             'cur_players': 0,
             'max_players': 4,
-            'name': "test",
+            'name': "TestRoom2",
             'sub': "Public",
-            'status': 0,
-        })
+            'status': 2,
+        },
+        # Add more as needed
+    ]
 
-    entries = b""
-    for entry in lobbies:
+    lobbies = []
+    entry_struct = '<III16s12s2sbB'
+
+    for entry in custom_lobbies:
         name = entry['name'].encode('euc-kr', errors='replace')[:16].ljust(16, b'\x00')
         sub = entry['sub'].encode('euc-kr', errors='replace')[:12].ljust(12, b'\x11')
+        reserved = b'\x00\x00'
+        status = int(entry['status'])
+        pad2 = 0
         packed = struct.pack(
-            '<III16s12s2sB B',
+            entry_struct,
             entry['room_id'],
             entry['cur_players'],
             entry['max_players'],
             name,
             sub,
-            b'\x00\x00',        # pad
-            entry['status'],
-            0                   # pad2
+            reserved,
+            status,
+            pad2
         )
-        entries += packed
+        lobbies.append({'name': entry['name'], 'status': entry['status'], 'packed': packed})
 
+    while len(lobbies) < 20:
+        idx = len(lobbies) + 1
+        name = f"Lobby{idx}".encode('euc-kr')[:16].ljust(16, b'\x00')
+        sub = b"Public".ljust(12, b'\x11')
+        reserved = b'\x00\x00'
+        status = 0
+        pad2 = 0
+        packed = struct.pack(
+            entry_struct,
+            idx,
+            0,
+            4,
+            name,
+            sub,
+            reserved,
+            status,
+            pad2
+        )
+        lobbies.append({'name': f"Lobby{idx}", 'status': status, 'packed': packed})
+
+    print_lobby_table(lobbies)
+
+    entries = b''.join(l['packed'] for l in lobbies)
     payload = struct.pack('<B3s', flag, unknown) + entries
     header = struct.pack('<HH', packet_id, len(payload))
     return header + payload
+
+def print_lobby_table(lobbies):
+    """
+    Prints a summary table of lobbies.
+    Status: 0=〈비어있음〉 (Empty), 1=대기중 (Waiting), 2=시작됨 (Started)
+    """
+    status_map = {0: '〈비어있음〉', 1: '대기중', 2: '시작됨'}
+    print("Idx  Name           Status")
+    print("="*28)
+    for i, l in enumerate(lobbies):
+        status_text = status_map.get(l['status'], str(l['status']))
+        print(f"{i:2}   {l['name'][:12]:12}   {status_text}")
 
 
 def send_packet_to_client(session, payload):
