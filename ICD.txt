@@ -1,38 +1,37 @@
-
 ==================================================================
                Mystic Nights Server Interface Control Document
 ==================================================================
-Version: 0.6
+Version: 0.6.3
 Date:    2024-05-28
 
 This document describes the binary packet protocol between the Mystic Nights
 game client and server. Packets are listed by direction, with structure
 definitions and descriptions where available.
 
-+----------------+-----------------------------------------------+
-| Packet ID      | Handler Function / Description                |
-+----------------+-----------------------------------------------+
-| 0x03f5         | FUN_0020bc20                                  |
-| 0x0bc8         | FUN_00213c80       Lobby List Packet          |
-| 0x0bbb         | FUN_002112f0       Channel List Packet        |
-| 0x0bc7         | FUN_0021c910       Server List Packet         |
-| 0x0bc6         | FUN_0021e490                                  |
-| 0x0bc5         | FUN_0021e4c0                                  |
-| 0x0bc4         | FUN_0021e4f0                                  |
-| 0x0bc3         | FUN_0021e560                                  |
-| 0x0bc2         | FUN_0021e590                                  |
-| 0x0bc1         | FUN_0021e5c0                                  |
-| 0x0bc0         | FUN_0021e5f0                                  |
-| 0x0bbf         | FUN_00213c50                                  |
-| 0x0bbe         | FUN_00213c50                                  |
-| 0x0bbd         | FUN_002120f0                                  |
-| 0x0bbc         | FUN_002112c0       Channel Join Ack           |
-| 0x0bba         | FUN_00219ed0       Account ?Create/Delete? Ack|
-| 0x0bb9         | FUN_00219ed0       Account ?Create/Delete? Ack|
-| 0x0bb8 (3000)  | FUN_00203cf0       Login Ack                  |
-| 0x03ee         | FUN_0021e6c0                                  |
-| 0x03e9         | FUN_0011cd30                                  |
-+----------------+-----------------------------------------------+
++----------------+------------------------------------------------+
+| Packet ID      | Handler Function / Description                 |
++----------------+------------------------------------------------+
+| 0x03f5         | FUN_0020bc20                                   |
+| 0x0bc8         | FUN_00213c80       Lobby List Packet           |
+| 0x0bbb         | FUN_002112f0       Channel List Packet         |
+| 0x0bc7         | FUN_0021c910       Server List Packet          |
+| 0x0bc6         | FUN_0021e490                                   |
+| 0x0bc5         | FUN_0021e4c0       Character Select Packet?    |
+| 0x0bc4         | FUN_0021e4f0                                   |
+| 0x0bc3         | FUN_0021e560                                   |
+| 0x0bc2         | FUN_0021e590                                   |
+| 0x0bc1         | FUN_0021e5c0                                   |
+| 0x0bc0         | FUN_0021e5f0                                   |
+| 0x0bbf         | FUN_00213c50       Lobby Join Ack              |
+| 0x0bbe         | FUN_00213c50       Lobby Join Ack              |
+| 0x0bbd         | FUN_002120f0       Lobby Create Ack            |
+| 0x0bbc         | FUN_002112c0       Channel Join Ack            |
+| 0x0bba         | FUN_00219ed0       Account ?Create/Delete? Ack |
+| 0x0bb9         | FUN_00219ed0       Account ?Create/Delete? Ack |
+| 0x0bb8 (3000)  | FUN_00203cf0       Login Ack                   |
+| 0x03ee         | FUN_0021e6c0                                   |
+| 0x03e9         | FUN_0011cd30                                   |
++----------------+------------------------------------------------+
 
 ==================================================================
 I.  Client -> Server Packets
@@ -42,11 +41,13 @@ I.  Client -> Server Packets
 | Packet Name              | PacketID | Structure Defined? | Description                                    |
 +--------------------------+----------+--------------------+------------------------------------------------+
 | Account Create           | 0x07d1   | Yes                | Client requests new account creation.          |
+| Channel Join             | 0x07d4   | Partial            | Client requests to join a channel.             |
+| Channel List Request     | 0x07d3   | No                 | Client requests list of channels.              |
+| Lobby Create Request     | 0x07d5   | Partial            | Client requests creation of a new lobby.       |
+| Lobby Join Request       | 0x07d6   | Partial            | Client requests to join an existing lobby.     |
+| Lobby List Request       | 0x07e0   | No                 | Client requests multiplayer lobby list.        |
 | Login Request            | 0x07d0   | No                 | Client requests to log in.                     |
 | Server List Request      | 0x07df   | No                 | Client requests list of servers.               |
-| Channel List Request     | 0x07d3   | No                 | Client requests list of channels.              |
-| Channel Join             | 0x07d4   | Partial            | Client requests to join a channel.             |
-| Lobby List Request       | 0x07e0   | No                 | Client requests multiplayer lobby list.        |
 +--------------------------+----------+--------------------+------------------------------------------------+
 
 --------------------------------------------------
@@ -70,6 +71,38 @@ Channel Join Request (0x07d4)
 | 0x14   | 2    | uint16   | channel   | Channel num  |
 |  ...   | ...  | ...      | ...       | (Unknown)    |
 
+--------------------------------------------------
+Lobby Create Request (0x07d5)
+--------------------------------------------------
+| Offset | Size | Type     | Field      | Notes                                |
+|--------|------|----------|------------|--------------------------------------|
+| 0x00   | 2    | uint16   | packet_id  | Always 0x07d5                        |
+| 0x02   | 2    | uint16   | length     | Payload length                       |
+| 0x04   | 4    | char[4]  | player_id  | ASCII, zero-padded                   |
+| 0x08   | 8    | unknown  | (padding?) | (Bytes between player_id & name)     |
+| 0x10   | 12   | char[12] | name       | ASCII, zero-padded                   |
+| 0x1C   | 8    | char[8]  | password   | ASCII, zero-padded                   |
+|  ...   | ...  | ...      | ...        | (Possible padding/unknowns)          |
+
+> - Only upper-case letters/numbers are accepted for name/password.
+> - If password is empty, lobby is public; otherwise, private.
+> - Lobby is created on the server with a unique `room_id`, and player is added to the players list.
+
+--------------------------------------------------
+Lobby Join Request (0x07d6)
+--------------------------------------------------
+| Offset | Size | Type     | Field      | Notes                                |
+|--------|------|----------|------------|--------------------------------------|
+| 0x00   | 2    | uint16   | packet_id  | Always 0x07d6                        |
+| 0x02   | 2    | uint16   | length     | Payload length                       |
+| 0x04   | 4    | char[4]  | player_id  | ASCII, zero-padded                   |
+| 0x08   | 16   | unknown  | (padding?) |                                      |
+| 0x18   | 12   | char[12] | name       | ASCII, zero-padded                   |
+|  ...   | ...  | ...      | ...        | (Possible padding/unknowns)          |
+
+> - Server matches `lobby_name` by raw ASCII comparison.
+> - If found and not full, player is added; otherwise, ignored or rejected.
+
 ==================================================================
 II.  Server -> Client Packets
 ==================================================================
@@ -79,11 +112,13 @@ II.  Server -> Client Packets
 +-------------------------------+----------+--------------------+-----------------------------------------------+
 | Account Create Result         | 0x0bba/9 | Partial            | Account creation success/failure response.    |
 | Account Delete Result         | 0x0bba/9 | Partial            | Account deletion success/failure response.    |
-| Login Result                  | 0x0bb8   | Yes                | Login result                     .            |
-| Server List Response          | 0x0bc7   | Yes                | Returns list of available servers.            |
-| Channel List Response         | 0x0bbb   | Yes                | Returns list of available channels.           |
 | Channel Join Ack              | 0x0bbc   | Yes                | Acknowledges channel join.                    |
+| Channel List Response         | 0x0bbb   | Yes                | Returns list of available channels.           |
+| Lobby Create Ack              | 0x0bbd   | Yes                | Acknowledges successful lobby creation.       |
+| Lobby Join Ack                | 0x0bbe   | Yes                | Acknowledges successful lobby join.           |
 | Lobby List Response           | 0x0bc8   | Yes                | Returns list of multiplayer lobbies.          |
+| Login Result                  | 0x0bb8   | Yes                | Login result                                 |
+| Server List Response          | 0x0bc7   | Yes                | Returns list of available servers.            |
 +-------------------------------+----------+--------------------+-----------------------------------------------+
 
 --------------------------------------------------
@@ -99,13 +134,89 @@ FAILURE CONDITION UNKNOWN
 --------------------------------------------------
 Account Delete Result (0x0bba/0x0bb9)
 --------------------------------------------------
---------------------------------------------------
 | Offset | Size | Type     | Field        | Notes                |
 |--------|------|----------|--------------|----------------------|
 | 0x00   | 2    | uint16   | packet_id    | 0x0bba or 0x0bb9     |
 | 0x02   | 2    | uint16   | payload_len  |                      |
 | 0x04   | 3    | uint8[3] | code         | 0x01 0x00 0x01/0x00  |
 FAILURE CONDITION UNKNOWN
+
+--------------------------------------------------
+Channel Join Ack (0x0bbc)
+--------------------------------------------------
+| Offset | Size | Type    | Field       | Notes      |
+|--------|------|---------|-------------|------------|
+| 0x00   | 2    | uint16  | packet_id   | 0x0bbc     |
+| 0x02   | 2    | uint16  | payload_len |            |
+| 0x04   | 1    | uint8   | ack         | Always 1   |
+
+--------------------------------------------------
+Channel List Response (0x0bbb)
+--------------------------------------------------
+| Offset | Size    | Type      | Field         | Notes          |
+|--------|---------|-----------|---------------|----------------|
+| 0x00   | 2       | uint16    | packet_id     | 0x0bbb         |
+| 0x02   | 2       | uint16    | payload_len   |                |
+| 0x04   | 1       | uint8     | flag          | Always 1       |
+| 0x05   | 3       | uint8[3]  | unknown       | Always 0       |
+| 0x08   | 12*12   | struct[]  | channel list  | Up to 12       |
+
+Each Channel Entry (12 bytes):
+| Offset | Size | Type    | Field        | Notes        |
+|--------|------|---------|--------------|--------------|
+| 0x00   | 4    | uint32  | index        | Channel idx  |
+| 0x04   | 4    | uint32  | cur_players  |              |
+| 0x08   | 4    | uint32  | max_players  |              |
+
+--------------------------------------------------
+Lobby Create Ack (0x0bbd)
+--------------------------------------------------
+| Offset | Size | Type    | Field     | Notes                         |
+|--------|------|---------|-----------|-------------------------------|
+| 0x00   | 2    | uint16  | packet_id | 0x0bbd                        |
+| 0x02   | 2    | uint16  | length    | Always 0x0001                 |
+| 0x04   | 1    | uint8   | status    | Always 0x01                   |
+| 0x05   | 1    | uint8   | status    | Always 0x00                   |
+| 0x06   | 1    | uint8   | status    | Always 0x01                   |
+
+> Example (hex): `bd0b010001`
+
+--------------------------------------------------
+Lobby Join Ack (0x0bbe)
+--------------------------------------------------
+| Offset | Size | Type    | Field     | Notes                         |
+|--------|------|---------|-----------|-------------------------------|
+| 0x00   | 2    | uint16  | packet_id | 0x0bbe                        |
+| 0x02   | 2    | uint16  | length    | Always 0x0001                 |
+| 0x04   | 1    | uint8   | status    | Always 0x01                   |
+| 0x05   | 1    | uint8   | status    | Always 0x00                   |
+| 0x06   | 1    | uint8   | status    | Always 0x01                   |
+
+> Example (hex): `be0b010001`
+
+--------------------------------------------------
+Lobby List Response (0x0bc8)
+--------------------------------------------------
+| Offset | Size    | Type      | Field         | Notes            |
+|--------|---------|-----------|---------------|------------------|
+| 0x00   | 2       | uint16    | packet_id     | 0x0bc8           |
+| 0x02   | 2       | uint16    | payload_len   |                  |
+| 0x04   | 1       | uint8     | flag          | Always 1         |
+| 0x05   | 3       | uint8[3]  | unknown       | Always 0         |
+| 0x08   | 44*20   | struct[]  | lobby entries | Up to 20 lobbies |
+
+Each Lobby Entry (44 bytes):
+| Offset | Size | Type      | Field      | Notes                                             |
+|--------|------|-----------|------------|---------------------------------------------------|
+| 0x00   | 4    | uint32    | room_id    |                                                   |
+| 0x04   | 4    | uint32    | cur_players|                                                   |
+| 0x08   | 4    | uint32    | max_players|                                                   |
+| 0x0C   | 16   | char[16]  | name       | EUC-KR, padded 0x00                               |
+| 0x1C   | 1    | uint8     | pad1       | Always 0                                          |
+| 0x1D   | 12   | char[12]  | password   | EUC-KR, padded 0x00, empty=public, filled=private |
+| 0x29   | 1    | uint8     | pad2       | Always 0                                          |
+| 0x2A   | 1    | uint8     | status     | 0=Empty, 1=Waiting, 2=Started                     |
+| 0x2B   | 1    | uint8     | pad3       | Always 0                                          |
 
 --------------------------------------------------
 Login Result (0x0bb8)
@@ -136,57 +247,6 @@ Each Server Entry (44 bytes):
 | 0x25   | 3    | uint8[3]  | reserved2  | 0x00                 |
 | 0x28   | 4    | int32     | avail      | -1, 0, 1, 2          |
 
---------------------------------------------------
-Channel List Response (0x0bbb)
---------------------------------------------------
-| Offset | Size    | Type      | Field         | Notes          |
-|--------|---------|-----------|---------------|----------------|
-| 0x00   | 2       | uint16    | packet_id     | 0x0bbb         |
-| 0x02   | 2       | uint16    | payload_len   |                |
-| 0x04   | 1       | uint8     | flag          | Always 1       |
-| 0x05   | 3       | uint8[3]  | unknown       | Always 0       |
-| 0x08   | 12*12   | struct[]  | channel list  | Up to 12       |
-
-Each Channel Entry (12 bytes):
-| Offset | Size | Type    | Field        | Notes        |
-|--------|------|---------|--------------|--------------|
-| 0x00   | 4    | uint32  | index        | Channel idx  |
-| 0x04   | 4    | uint32  | cur_players  |              |
-| 0x08   | 4    | uint32  | max_players  |              |
-
---------------------------------------------------
-Channel Join Ack (0x0bbc)
---------------------------------------------------
-| Offset | Size | Type    | Field       | Notes      |
-|--------|------|---------|-------------|------------|
-| 0x00   | 2    | uint16  | packet_id   | 0x0bbc     |
-| 0x02   | 2    | uint16  | payload_len |            |
-| 0x04   | 1    | uint8   | ack         | Always 1   |
-
---------------------------------------------------
-Lobby List Response (0x0bc8)
---------------------------------------------------
-| Offset | Size    | Type      | Field         | Notes            |
-|--------|---------|-----------|---------------|------------------|
-| 0x00   | 2       | uint16    | packet_id     | 0x0bc8           |
-| 0x02   | 2       | uint16    | payload_len   |                  |
-| 0x04   | 1       | uint8     | flag          | Always 1         |
-| 0x05   | 3       | uint8[3]  | unknown       | Always 0         |
-| 0x08   | 44*20   | struct[]  | lobby entries | Up to 20 lobbies |
-
-Each Lobby Entry (44 bytes):
-| Offset | Size | Type      | Field      | Notes                                             |
-|--------|------|-----------|------------|---------------------------------------------------|
-| 0x00   | 4    | uint32    | room_id    |                                                   |
-| 0x04   | 4    | uint32    | cur_players|                                                   |
-| 0x08   | 4    | uint32    | max_players|                                                   |
-| 0x0C   | 16   | char[16]  | name       | EUC-KR, padded 0x00                               |
-| 0x1C   | 1    | uint8     | pad1       | Always 0                                          |
-| 0x1D   | 12   | char[12]  | password   | EUC-KR, padded 0x00, empty=public, filled=private |
-| 0x29   | 1    | uint8     | pad2       | Always 0                                          |
-| 0x2A   | 1    | uint8     | status     | 0=Empty, 1=Waiting, 2=Started                     |
-| 0x2B   | 1    | uint8     | pad3       | Always 0                                          |
-
 ==================================================================
 Notes
 ==================================================================
@@ -196,5 +256,8 @@ Notes
 - Unused fields/padding are typically 0x00.
 - Multi-entry responses (server/channel/lobby lists) are padded with blank entries.
 - Strings are EUC-KR or ASCII, zero-padded.
-
-==================================================================
+- Lobby structure on server tracks: room_id, name, password, max_players, current_players, and players (list of player IDs).
+- If password is empty, lobby is public; otherwise, private.
+- When a player joins a lobby, current_players is incremented. If full, join is rejected.
+- Lobby status: 0 = Empty, 1 = Waiting, 2 = Started.
+- Fields are always padded with 0x00 (never 0x11).

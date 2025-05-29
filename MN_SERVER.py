@@ -16,10 +16,30 @@ tcp_sessions = {}
 accounts = [("AAAA", "AAAA")]  # Store tuples of (username, password)
 allow_manual_send = False
 latest_session = None
+lobbies = {
+    "TestRoom1": {
+        'room_id': 1,
+        'name': "TestRoom1",
+        'password': "",
+        'max_players': 4,
+        'current_players': 0,
+        'players': []
+    },
+    "TestRoom2": {
+        'room_id': 2,
+        'name': "TestRoom2",
+        'password': "PW123",
+        'max_players': 4,
+        'current_players': 0,
+        'players': []
+    }
+}
+lobby_counter = 3  # to assign new room_id (avoid collision with your existing test lobbies)
 
-print("-------------------------------")
-print("Mystic Nights Dummy Server v0.6")
-print("-------------------------------")
+
+print("---------------------------------")
+print("Mystic Nights Dummy Server v0.6.3")
+print("---------------------------------")
 
 def kill_process_using_port(port):
     print(f"Killing processes that may be using port {port}...")
@@ -216,14 +236,15 @@ def build_lobby_list_packet():
         0x00: uint32 room_id
         0x04: uint32 cur_players
         0x08: uint32 max_players
-        0x0C: char[16] name (EUC-KR, padded with \x00)
+        0x0C: char[16] name (EUC-KR, padded with \x00) [Client only accepts 12 char entries]
         0x1C: uint8 pad1 (b'\x00')
-        0x1D: char[12] password (EUC-KR, padded with \x00)
+        0x1D: char[12] password (EUC-KR, padded with \x00) [Client only accepts 8 char entries]l
                 # NOTE: If password is empty, lobby is PUBLIC
                 #       If password is non-empty, lobby is PRIVATE
         0x29: uint8 pad2 (b'\x00')
         0x2A: uint8 status (0=〈비어있음〉, 1=대기중, 2=시작됨)
         0x2B: uint8 pad3 (b'\x00')
+    Note: name and password must only contain upper case letters and numbers
     """
     import struct
 
@@ -231,42 +252,22 @@ def build_lobby_list_packet():
     flag = 1
     unknown = b'\x00\x00\x00'
 
-    custom_lobbies = [
-        {
-            'room_id': 1,
-            'cur_players': 0,
-            'max_players': 4,
-            'name': "TestRoom1",
-            'password': "",         # PUBLIC lobby (no password)
-            'status': 1,            # 1=대기중 (Waiting/In Queue)
-        },
-        {
-            'room_id': 2,
-            'cur_players': 0,
-            'max_players': 4,
-            'name': "TestRoom2",
-            'password': "pw123",    # PRIVATE lobby (password-protected)
-            'status': 2,            # 2=시작됨 (Started)
-        },
-        # Add more as needed
-    ]
-
-    lobbies = []
     entry_struct = '<III16s1s12s1sB1s'  # 44 bytes
 
-    for entry in custom_lobbies:
+    lobby_list = list(lobbies.values())
+    lobbies_for_packet = []
+    for entry in lobby_list:
         name = entry['name'].encode('euc-kr', errors='replace')[:16].ljust(16, b'\x00')
         pad1 = b'\x00'
-        # Always pad password field with \x00 regardless of content
         password = entry.get('password', '').encode('euc-kr', errors='replace')[:12].ljust(12, b'\x00')
         pad2 = b'\x00'
-        status = int(entry['status'])
+        status = int(entry.get('status', 1))
         pad3 = b'\x00'
 
         packed = struct.pack(
             entry_struct,
             entry['room_id'],
-            entry['cur_players'],
+            entry['current_players'],
             entry['max_players'],
             name,
             pad1,
@@ -275,10 +276,11 @@ def build_lobby_list_packet():
             status,
             pad3
         )
-        lobbies.append({'name': entry['name'], 'status': entry['status'], 'packed': packed})
+        lobbies_for_packet.append({'name': entry['name'], 'status': status, 'packed': packed})
 
-    while len(lobbies) < 20:
-        idx = len(lobbies) + 1
+    # Pad out to 20 entries (empty lobbies)
+    while len(lobbies_for_packet) < 20:
+        idx = len(lobbies_for_packet) + 1
         name = f"Lobby{idx}".encode('euc-kr')[:16].ljust(16, b'\x00')
         pad1 = b'\x00'
         password = b"".ljust(12, b'\x00')   # PUBLIC (no password)
@@ -297,31 +299,59 @@ def build_lobby_list_packet():
             status,
             pad3
         )
-        lobbies.append({'name': f"Lobby{idx}", 'status': status, 'packed': packed})
+        lobbies_for_packet.append({'name': f"Lobby{idx}", 'status': status, 'packed': packed})
 
-    # Print lobby table (optional for debugging)
-    print_lobby_table(lobbies)
+    print_lobby_table(lobbies_for_packet)
 
-    entries = b''.join(l['packed'] for l in lobbies)
+    entries = b''.join(l['packed'] for l in lobbies_for_packet)
     payload = struct.pack('<B3s', flag, unknown) + entries
     header = struct.pack('<HH', packet_id, len(payload))
     return header + payload
 
-def print_lobby_table(lobbies):
+def print_lobby_table(lobby_list=None):
     """
     Prints a summary table of lobbies.
     Status: 0=〈비어있음〉 (Empty), 1=대기중 (Waiting), 2=시작됨 (Started)
     """
     status_map = {0: '〈비어있음〉', 1: '대기중', 2: '시작됨'}
-    print("Idx  Name           Status   Type")
-    print("="*40)
-    for i, l in enumerate(lobbies):
-        status_text = status_map.get(l['status'], str(l['status']))
-        # Check if password is set
-        packed_password = l['packed'][21:33]
-        is_private = any(packed_password.strip(b'\x00'))
+    print("Idx  Name           Status   Type    Players")
+    print("="*60)
+    # Use global lobbies if no argument
+    if lobby_list is None:
+        lobby_list = list(lobbies.values())
+    for i, l in enumerate(lobby_list):
+        status_text = status_map.get(l.get('status', 1), str(l.get('status', 1)))
+        is_private = bool(l.get('password'))
         type_text = "Private" if is_private else "Public"
-        print(f"{i:2}   {l['name'][:12]:12}   {status_text:6}  {type_text}")
+        players = ','.join(l.get('players', []))
+        print(f"{i:2}   {l.get('name','')[:12]:12}   {status_text:6}  {type_text:7} {players}")
+
+
+def parse_lobby_create_packet(data):
+    # Sample incoming: d5 07 2b 00 41414141000000000000000000424142415858585858585858000000000041414141414141410000000000
+    # Offsets found by hex inspection:
+    # 0x04: 4 bytes: player_id
+    # 0x0C: 12 bytes: lobby name
+    # 0x1C: 8 bytes: password
+    player_id = data[4:8].decode('ascii').rstrip('\x00')
+    lobby_name = data[17:29].decode('ascii').rstrip('\x00')
+    password = data[34:42].decode('ascii').rstrip('\x00')
+    return player_id, lobby_name, password
+
+def build_lobby_create_ack():
+    return bytes.fromhex("bd0b010001")
+
+def parse_lobby_join_packet(data):
+    # Offsets found by hex inspection:
+    # 0x04: 4 bytes: player_id
+    # 0x18: 12 bytes: lobby name
+    player_id = data[4:8].decode('ascii').rstrip('\x00')
+    lobby_name = data[24:36].decode('ascii').rstrip('\x00')
+    return player_id, lobby_name
+
+def build_lobby_join_ack():
+    # be0b010001 // bf0b010001 works too
+    return bytes.fromhex("be0b010001")
 
 def send_packet_to_client(session, payload):
     ether = Ether(dst=session["mac"], src=MY_MAC)
@@ -445,6 +475,64 @@ def handle_ip(pkt):
             else:
                 latest_session = session  # update session if new server list 
         
+        elif pkt_id == 0x07d5:
+            player_id, lobby_name, password = parse_lobby_create_packet(client_data)
+            global lobby_counter
+            if lobby_name not in lobbies:
+                lobbies[lobby_name] = {
+                    'room_id': lobby_counter,
+                    'name': lobby_name,
+                    'password': password,
+                    'max_players': 4,   # can adjust as needed
+                    'current_players': 1,
+                    'players': [player_id]
+                }
+                lobby_counter += 1
+                print(f"[LOBBY CREATE] '{lobby_name}' created by '{player_id}', password={password}{'(private)' if password else 'none(public)'}")
+            else:
+                # Already exists? You may want to handle this case.
+                print(f"[LOBBY CREATE] Attempt to recreate existing lobby '{lobby_name}' ignored.")
+            response = build_lobby_create_ack()
+            print(f"[SEND] To {ip.src}:{tcp.sport} ← {response.hex()}")
+            if not allow_manual_send:
+                allow_manual_send = True
+                latest_session = session
+                threading.Thread(target=manual_packet_sender, daemon=True).start()
+            else:
+                        latest_session = session  # update session if new server list requested
+        
+        elif pkt_id == 0x07d6:
+            player_id, lobby_name = parse_lobby_join_packet(client_data)
+            lobby = lobbies.get(lobby_name)
+            if not lobby:
+                for name in lobbies:
+                    # Only strip nulls for both sides; do NOT .upper(), .lower(), or .strip() whitespace!
+                    if name.rstrip('\x00') == lobby_name.rstrip('\x00'):
+                        lobby = lobbies[name]
+                        lobby_name = name
+                        break
+
+            if lobby:
+                if player_id not in lobby['players']:
+                    if lobby['current_players'] < lobby['max_players']:
+                        lobby['players'].append(player_id)
+                        lobby['current_players'] += 1
+                        print(f"[LOBBY JOIN] '{player_id}' joined lobby '{lobby_name}'")
+                    else:
+                        print(f"[LOBBY JOIN] '{lobby_name}' is full! '{player_id}' cannot join.")
+                else:
+                    print(f"[LOBBY JOIN] '{player_id}' is already in lobby '{lobby_name}'")
+            else:
+                print(f"[LOBBY JOIN] Lobby '{lobby_name}' does not exist.")
+            response = build_lobby_join_ack()
+            print(f"[SEND] To {ip.src}:{tcp.sport} ← {response.hex()}")
+            if not allow_manual_send:
+                allow_manual_send = True
+                latest_session = session
+                threading.Thread(target=manual_packet_sender, daemon=True).start()
+            else:
+                latest_session = session  # update session if new server list requested
+        
         elif pkt_id == 0x07e0:
             response = build_lobby_list_packet()
             print(f"[SEND] To {ip.src}:{tcp.sport} ← {response.hex()}")
@@ -455,7 +543,26 @@ def handle_ip(pkt):
             else:
                 latest_session = session  # update session if new server list requested
     
+        elif pkt_id == 0x07d6:
+            response = build_lobby_join_ack()
+            print(f"[SEND] To {ip.src}:{tcp.sport} ← {response.hex()}")
+            if not allow_manual_send:
+                allow_manual_send = True
+                latest_session = session
+                threading.Thread(target=manual_packet_sender, daemon=True).start()
+            else:
+                latest_session = session  # update session if new server list requested
 
+        elif pkt_id == 0x07d5:
+            response = build_lobby_create_ack()
+            print(f"[SEND] To {ip.src}:{tcp.sport} ← {response.hex()}")
+            if not allow_manual_send:
+                allow_manual_send = True
+                latest_session = session
+                threading.Thread(target=manual_packet_sender, daemon=True).start()
+            else:
+                latest_session = session  # update session if new server list requested
+    
         else:
             print(f"[WARN] Unhandled packet ID: {pkt_id}")
 
