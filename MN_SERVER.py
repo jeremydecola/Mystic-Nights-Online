@@ -9,16 +9,21 @@ from scapy.all import *
 HOST = '211.233.10.5'
 TCP_PORT = 18000
 TCP_PORT_CHANNEL = 18001
-MY_MAC = "00:ff:e5:67:d5:da"
+#Canada
+#MY_MAC = "00:ff:e5:67:d5:da"
+#Korea - 00:04:1f:82:bf:b2
+MY_MAC = "00:ff:22:cc:b2:bf"
 IFACE = "OpenVPN TAP-Windows6"
 
+previous_pkt_id = 0
+pkt_cnt = 0
 tcp_sessions = {}
 accounts = [("AAAA", "AAAA")]  # Store tuples of (username, password)
 allow_manual_send = False
 latest_session = None
 lobbies = {
     "TestRoom1": {
-        'room_id': 1,
+        'room_id': 0,
         'name': "TestRoom1",
         'password': "",
         'max_players': 4,
@@ -26,15 +31,23 @@ lobbies = {
         'players': []
     },
     "TestRoom2": {
-        'room_id': 2,
+        'room_id': 1,
         'name': "TestRoom2",
         'password': "PW123",
         'max_players': 4,
         'current_players': 0,
         'players': []
+    },
+    "TestRoom3": {
+        'room_id': 2,
+        'name': "TestRoom3",
+        'password': "CC999",
+        'max_players': 4,
+        'current_players': 0,
+        'players': []
     }
 }
-lobby_counter = 3  # to assign new room_id (avoid collision with your existing test lobbies)
+lobby_counter = 4  # to assign new room_id (avoid collision with your existing test lobbies)
 
 
 print("---------------------------------")
@@ -184,15 +197,15 @@ def build_channel_list_packet():
     # Define channels (each is a tuple: index, current_players, max_players)
     # Only 1 channel for testing, rest will be zero-filled.
     channels = [
-        (0, 1, 4),  # Channel 1: 0/4 players
-        (1, 0, 4),
-        (2, 3, 4)
+        (0, 0, 80),  # Channel 1: 0/4 players
+        (1, 0, 80),
+        (2, 0, 80)
         # Add more tuples here if needed
     ]
 
     # Pad out to 12 channels
     while len(channels) < 12:
-        channels.append((len(channels), 0, 4))
+        channels.append((len(channels), 0, 80))
 
     # Build entries (12 bytes each: <III)
     entries = b''
@@ -224,9 +237,17 @@ def parse_channel_join_packet(data):
 def build_channel_join_ack(data):
     info = parse_channel_join_packet(data)
     print(info)
-    packet_id = 0xbbc
-    payload = b'\x01'
-    header = struct.pack('<HH', packet_id, len(payload))
+    """
+    Builds a 0xbbc channel join ack packet.
+    - val: 2-byte value, e.g., 1 or 2.
+    Returns a bytes object ready to send.
+    """
+    val = 1
+    packet_id = 0x0bbc
+    flag = b'\x01\x00\x00\x00'  # 4 bytes
+    payload = flag + struct.pack('<H', val)  # 4 + 2 = 6 bytes
+    packet_len = len(payload)
+    header = struct.pack('<HH', packet_id, packet_len)
     return header + payload
 
 def build_lobby_list_packet():
@@ -349,9 +370,70 @@ def parse_lobby_join_packet(data):
     lobby_name = data[24:36].decode('ascii').rstrip('\x00')
     return player_id, lobby_name
 
+
 def build_lobby_join_ack():
-    # be0b010001 // bf0b010001 works too
-    return bytes.fromhex("be0b010001")
+    """
+    Builds a 0xbbf lobby join ack packet.
+    - val: 2-byte value, e.g., 1 or 2.
+    Returns a bytes object ready to send.
+    """
+    val = 0
+    packet_id = 0x0bbe
+    flag = b'\x01\x00\x00\x00'  # 4 bytes
+    payload = flag + struct.pack('<H', val)  # 4 + 2 = 6 bytes
+    packet_len = len(payload)
+    header = struct.pack('<HH', packet_id, packet_len)
+    return header + payload
+
+def build_lobby_join_ack_2():
+    """
+    Builds a 0xbbf lobby join ack packet.
+    - val: 2-byte value, e.g., 1 or 2.
+    Returns a bytes object ready to send.
+    """
+    val = 0
+    packet_id = 0x0bbf
+    flag = b'\x01\x00\x00\x00'  # 4 bytes
+    payload = flag + struct.pack('<H', val)  # 4 + 2 = 6 bytes
+    packet_len = len(payload)
+    header = struct.pack('<HH', packet_id, packet_len)
+    return header + payload
+
+def build_lobby_room_packet(lobby_name, players=None):
+    """
+    Build a 0x03ee Lobby Room Info packet for Mystic Nights.
+    Layout:
+      0x00: packet_id  (2 bytes, little endian)
+      0x02: pkt_len    (2 bytes, little endian)
+      0x04: flag       (4 bytes, always 01 00 00 00)
+      0x08: lobby_name (16 bytes, EUC-KR, null-padded)
+      0x18: unknown0   (16 bytes, zero or as needed)
+      0x30: 4 player info blocks, 28 bytes each = 112 bytes
+    """
+    packet_id = 0x03ee
+    flags = b'\x01\x00\x00\x00'
+    name = lobby_name.encode('euc-kr', errors='replace')[:16].ljust(16, b'\x00')
+    unknown0 = b'\x00' * 16
+
+    if players is None:
+        players = []
+
+    player_structs = []
+    for p in (players + [{}]*4)[:4]:
+        # 32 bytes per block, only the first few are meaningful for now
+        pid = p.get("player_id", b'\x00\x00\x00\x00')
+        if isinstance(pid, str):
+            pid = pid.encode('ascii', errors='replace')[:8].ljust(4, b'\x00')
+        block = bytearray(32)
+        block[0:8] = pid
+        block[0x0d] = p.get("character", 0)
+        block[0x0e] = p.get("status", 0)
+        player_structs.append(bytes(block))
+
+    payload = name + unknown0 + b''.join(player_structs)
+    header = struct.pack('<HH', packet_id, len(payload)) + flags
+    packet = header + payload
+    return packet
 
 def send_packet_to_client(session, payload):
     ether = Ether(dst=session["mac"], src=MY_MAC)
@@ -360,6 +442,37 @@ def send_packet_to_client(session, payload):
                     seq=session["seq"] + 1, ack=session["ack"])
     sendp(ether/ip_layer/tcp_layer/Raw(load=payload), iface=IFACE, verbose=False)
     session["seq"] += len(payload)
+
+def build_bc4_packet(data: bytes) -> bytes:
+    """
+    Build a 0xbc4 packet with the standard header and 32-byte data payload.
+    Header: <packet_id:2> <payload_len:2> 01 00 00 00
+    """
+    import struct
+    packet_id = 0xbc4
+    # 4 for flag+unknown, 32 for data
+    payload_len = 4 + 32
+    if len(data) != 32:
+        raise ValueError("data for 0xbc4 packet must be exactly 32 bytes")
+    header = struct.pack('<HH', packet_id, payload_len)
+    flag_and_unknown = b'\x01\x00\x00\x00'
+    return header + flag_and_unknown + data
+
+def build_bc0_packet(data: bytes, param_3: int, param_4: int, param_5: int) -> bytes:
+    """
+    Build a 0xbc0 packet with standard header and 16 bytes data + 3 shorts.
+    Header: <packet_id:2> <payload_len:2> 01 00 00 00
+    """
+    import struct
+    packet_id = 0xbc0
+    # 4 for flag+unknown, 16 for data, 2+2+2 for shorts
+    payload_len = 4 + 16 + 2 + 2 + 2
+    if len(data) != 16:
+        raise ValueError("data for 0xbc0 packet must be exactly 16 bytes")
+    header = struct.pack('<HH', packet_id, payload_len)
+    flag_and_unknown = b'\x01\x00\x00\x00'
+    payload = struct.pack('<16sHHh', data, param_3, param_4, param_5)
+    return header + flag_and_unknown + payload
 
 def manual_packet_sender():
     global latest_session
@@ -380,7 +493,7 @@ def manual_packet_sender():
             print("[ERROR] No session to send to.")
 
 def handle_ip(pkt):
-    global allow_manual_send, latest_session
+    global allow_manual_send, latest_session, previous_pkt_id, pkt_cnt
     if not (pkt.haslayer(IP) and pkt.haslayer(TCP)):
         return
 
@@ -524,7 +637,23 @@ def handle_ip(pkt):
                     print(f"[LOBBY JOIN] '{player_id}' is already in lobby '{lobby_name}'")
             else:
                 print(f"[LOBBY JOIN] Lobby '{lobby_name}' does not exist.")
-            response = build_lobby_join_ack()
+            if previous_pkt_id == pkt_id and pkt_cnt == 2:
+                response = build_lobby_room_packet(
+                    lobby_name,
+                    players=[
+                    {"player_id": player_id, "character": 0x01, "status": 0x01},
+                    {"player_id": "JEREMY", "character": 0x06, "status": 0x00},
+                    {"player_id": "DJANGO", "character": 0x03, "status": 0x00},
+                    {"player_id": "FANOUI", "character": 0x08, "status": 0x01}
+                    # Add more player dicts if desired
+                    ])
+                pkt_cnt = 0
+            elif previous_pkt_id == pkt_id and pkt_cnt == 1:
+                response = build_lobby_join_ack_2()
+                pkt_cnt = 2
+            else:
+                response = build_lobby_join_ack()
+                pkt_cnt = 1
             print(f"[SEND] To {ip.src}:{tcp.sport} ← {response.hex()}")
             if not allow_manual_send:
                 allow_manual_send = True
@@ -542,27 +671,7 @@ def handle_ip(pkt):
                 threading.Thread(target=manual_packet_sender, daemon=True).start()
             else:
                 latest_session = session  # update session if new server list requested
-    
-        elif pkt_id == 0x07d6:
-            response = build_lobby_join_ack()
-            print(f"[SEND] To {ip.src}:{tcp.sport} ← {response.hex()}")
-            if not allow_manual_send:
-                allow_manual_send = True
-                latest_session = session
-                threading.Thread(target=manual_packet_sender, daemon=True).start()
-            else:
-                latest_session = session  # update session if new server list requested
 
-        elif pkt_id == 0x07d5:
-            response = build_lobby_create_ack()
-            print(f"[SEND] To {ip.src}:{tcp.sport} ← {response.hex()}")
-            if not allow_manual_send:
-                allow_manual_send = True
-                latest_session = session
-                threading.Thread(target=manual_packet_sender, daemon=True).start()
-            else:
-                latest_session = session  # update session if new server list requested
-    
         else:
             print(f"[WARN] Unhandled packet ID: {pkt_id}")
 
@@ -575,6 +684,8 @@ def handle_ip(pkt):
             session["seq"] += len(response)
             session["ack"] = tcp.seq + len(client_data)
             latest_session = session  # Always set latest_session to most recent
+        
+        previous_pkt_id = pkt_id 
 
 def packet_handler(pkt):
     if pkt.haslayer(ARP):

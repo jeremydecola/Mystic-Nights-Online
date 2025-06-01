@@ -18,6 +18,24 @@ TBD
 TBD
 
 ## *PROGRESS*
+### 0.6.4
+* DNAS BYPASS (complete)
+  *Bypass only works once. Must reset each time for bypass to work. Otherwise, hangs on DNAS screen.
+* SERVER LIST PACKET (complete)
+* ACCOUNT CREATE ACK PACKET (partially working)
+  *Error logic missing
+* ACCOUNT DELETE ACK PACKET (partially working)
+  *Error logic missing
+  *Despite triggering a succesful state change, the client continuously sends the deletion packet after ack. (something is wrong)
+* LOGIN ACK PACKET
+* CHANNEL LIST PACKET (complete)
+* CHANNEL SELECT ACK PACKET (complete)
+* LOBBY LIST PACKET (complete)
+* LOBBY JOIN ACK PACKET (complete)
+* LOBBY CREATE ACK PACKET (complete)
+* NETROOM Logic (in work)
+  *Discovered how to write to different fields in NETROOM with 0x03ee
+
 ### 0.6.3
 * DNAS BYPASS (complete)
   *Bypass only works once. Must reset each time for bypass to work. Otherwise, hangs on DNAS screen.
