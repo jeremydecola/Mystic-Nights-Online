@@ -51,7 +51,7 @@ lobby_counter = 4  # to assign new room_id (avoid collision with your existing t
 
 
 print("---------------------------------")
-print("Mystic Nights Dummy Server v0.6.3")
+print("Mystic Nights Dummy Server v0.6.4")
 print("---------------------------------")
 
 def kill_process_using_port(port):
@@ -420,11 +420,11 @@ def build_lobby_room_packet(lobby_name, players=None):
 
     player_structs = []
     for p in (players + [{}]*4)[:4]:
-        # 32 bytes per block, only the first few are meaningful for now
-        pid = p.get("player_id", b'\x00\x00\x00\x00')
+        # 28 bytes per block, only the first few are meaningful for now
+        pid = p.get("player_id", b'\x00' * 8)
         if isinstance(pid, str):
-            pid = pid.encode('ascii', errors='replace')[:8].ljust(4, b'\x00')
-        block = bytearray(32)
+            pid = pid.encode('ascii', errors='replace')[:8].ljust(8, b'\x00')
+        block = bytearray(28)
         block[0:8] = pid
         block[0x0d] = p.get("character", 0)
         block[0x0e] = p.get("status", 0)
@@ -434,6 +434,20 @@ def build_lobby_room_packet(lobby_name, players=None):
     header = struct.pack('<HH', packet_id, len(payload)) + flags
     packet = header + payload
     return packet
+
+def build_map_select_ack():
+    """
+    Builds a 0xbbf lobby join ack packet.
+    - val: 2-byte value, e.g., 1 or 2.
+    Returns a bytes object ready to send.
+    """
+    val = 1
+    packet_id = 0x0bc6
+    flag = b'\x01\x00\x00\x00'  # 4 bytes
+    payload = flag + struct.pack('<H', val)  # 4 + 2 = 6 bytes
+    packet_len = len(payload)
+    header = struct.pack('<HH', packet_id, packet_len)
+    return header + payload
 
 def send_packet_to_client(session, payload):
     ether = Ether(dst=session["mac"], src=MY_MAC)
@@ -672,6 +686,15 @@ def handle_ip(pkt):
             else:
                 latest_session = session  # update session if new server list requested
 
+        elif pkt_id == 0x07de:
+            response = build_map_select_ack()
+            print(f"[SEND] To {ip.src}:{tcp.sport} ← {response.hex()}")
+            if not allow_manual_send:
+                allow_manual_send = True
+                latest_session = session
+                threading.Thread(target=manual_packet_sender, daemon=True).start()
+            else:
+                latest_session = session  # update session if new server list requested
         else:
             print(f"[WARN] Unhandled packet ID: {pkt_id}")
 
