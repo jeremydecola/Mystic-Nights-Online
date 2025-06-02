@@ -405,15 +405,17 @@ def build_lobby_room_packet(lobby_name, players=None):
     Layout:
       0x00: packet_id  (2 bytes, little endian)
       0x02: pkt_len    (2 bytes, little endian)
-      0x04: flag       (4 bytes, always 01 00 00 00)
+      0x02: lobby_owner (2 bytes, 00/01/02/03 for players 1 through 4 respectively)
+      0x02: unknown0
       0x08: lobby_name (16 bytes, EUC-KR, null-padded)
-      0x18: unknown0   (16 bytes, zero or as needed)
+      0x18: unknown1   (16 bytes, zero or as needed)
       0x30: 4 player info blocks, 28 bytes each = 112 bytes
     """
     packet_id = 0x03ee
-    flags = b'\x01\x00\x00\x00'
+    lobby_owner = b'\x00\x00'
     name = lobby_name.encode('euc-kr', errors='replace')[:16].ljust(16, b'\x00')
-    unknown0 = b'\x00' * 16
+    unknown0 = b'\x00' * 2
+    unknown1 = b'\x00' * 16
 
     if players is None:
         players = []
@@ -430,8 +432,8 @@ def build_lobby_room_packet(lobby_name, players=None):
         block[0x0e] = p.get("status", 0)
         player_structs.append(bytes(block))
 
-    payload = name + unknown0 + b''.join(player_structs)
-    header = struct.pack('<HH', packet_id, len(payload)) + flags
+    payload = unknown0 + lobby_owner + name + unknown1 + b''.join(player_structs)
+    header = struct.pack('<HH', packet_id, len(payload))
     packet = header + payload
     return packet
 
