@@ -18,85 +18,42 @@ TBD
 TBD
 
 ## *PROGRESS*
-### 0.6.4
-* DNAS BYPASS (complete)
-  *Bypass only works once. Must reset each time for bypass to work. Otherwise, hangs on DNAS screen.
-* SERVER LIST PACKET (complete)
-* ACCOUNT CREATE ACK PACKET (partially working)
-  *Error logic missing
-* ACCOUNT DELETE ACK PACKET (partially working)
-  *Error logic missing
-  *Despite triggering a succesful state change, the client continuously sends the deletion packet after ack. (something is wrong)
-* LOGIN ACK PACKET
-* CHANNEL LIST PACKET (complete)
-* CHANNEL SELECT ACK PACKET (complete)
-* LOBBY LIST PACKET (complete)
-* LOBBY JOIN ACK PACKET (complete)
-* LOBBY CREATE ACK PACKET (complete)
+### 0.6.5
 * NETROOM Logic (in work)
-  *Discovered how to write to different fields in NETROOM with 0x03ee
+  * Discovered value range for E,D,C,B,A,S RANK values.
+  * Discovered position of Map Select Index and most other 0x03ee fields  
+
+### 0.6.4
+* NETROOM Logic (in work)
+  * Established preliminary partial packet structure and fields for 0x03ee
 
 ### 0.6.3
-* DNAS BYPASS (complete)
-  *Bypass only works once. Must reset each time for bypass to work. Otherwise, hangs on DNAS screen.
-* SERVER LIST PACKET (complete)
-* ACCOUNT CREATE ACK PACKET (partially working)
-  *Error logic missing
-* ACCOUNT DELETE ACK PACKET (partially working)
-  *Error logic missing
-  *Despite triggering a succesful state change, the client continuously sends the deletion packet after ack. (something is wrong)
-* LOGIN ACK PACKET
-* CHANNEL LIST PACKET (complete)
-* CHANNEL SELECT ACK PACKET (complete)
-* LOBBY LIST PACKET (complete)
 * LOBBY JOIN ACK PACKET (complete)
 * LOBBY CREATE ACK PACKET (complete)
 * NETROOM Logic (in work)
 
 ### 0.6.2
-* DNAS BYPASS (complete)
-  *Bypass only works once. Must reset each time for bypass to work. Otherwise, hangs on DNAS screen.
-* SERVER LIST PACKET (complete)
-* ACCOUNT CREATE ACK PACKET (partially working)
-  *Error logic missing
-* ACCOUNT DELETE ACK PACKET (partially working)
-  *Error logic missing
-  *Despite triggering a succesful state change, the client continuously sends the deletion packet after ack. (something is wrong)
-* LOGIN ACK PACKET
-* CHANNEL LIST PACKET (complete)
-* CHANNEL SELECT ACK PACKET (complete)
 * LOBBY LIST PACKET (complete)
 * LOBBY SELECT ACK PACKET (in work)
   
 ### 0.6.1
-* DNAS BYPASS (complete)
-  *Bypass only works once. Must reset each time for bypass to work. Otherwise, hangs on DNAS screen.
-* SERVER LIST PACKET (complete)
-* ACCOUNT CREATE ACK PACKET (partially working)
-  *Error logic missing
-* ACCOUNT DELETE ACK PACKET (partially working)
-  *Error logic missing
-  *Despite triggering a succesful state change, the client continuously sends the deletion packet after ack. (something is wrong)
-* LOGIN ACK PACKET
-* CHANNEL LIST PACKET (complete)
-* CHANNEL SELECT ACK PACKET (complete)
 * LOBBY LIST PACKET (in work)
-  *Done: Lobby Name, Current Players, Max Players, Lobby Status
-  *To Do: Private/Public flag , Lobby Password
+* Done: Lobby Name, Current Players, Max Players, Lobby Status
+  * To Do: Private/Public flag , Lobby Password
 
 
 ### 0.6.0
 * DNAS BYPASS (complete)
-  *Bypass only works once. Must reset each time for bypass to work. Otherwise, hangs on DNAS screen.
+  * Bypass only works once. Must reset each time for bypass to work. Otherwise, hangs on DNAS screen.
 * SERVER LIST PACKET (complete)
 * ACCOUNT CREATE ACK PACKET (partially working)
-  *Error logic missing
+  * Error logic missing
 * ACCOUNT DELETE ACK PACKET (partially working)
-  *Error logic missing
-  *Despite triggering a succesful state change, the client continuously sends the deletion packet after ack. (something is wrong)
+  * Error logic missing
+  * Despite triggering a succesful state change, the client continuously sends the deletion packet after ack. (something is wrong)
 * LOGIN ACK PACKET
 * CHANNEL LIST PACKET (complete)
 * CHANNEL SELECT ACK PACKET (complete)
 * LOBBY LIST PACKET (in work)
-  *Done: Lobby Name, Current Players, Max Players
-  *To Do: Private/Public flag , Lobby Password and Lobby Status (Empty, In Queue, Started) 
+  * Done: Lobby Name, Current Players, Max Players
+  * To Do: Private/Public flag , Lobby Password and Lobby Status (Empty, In Queue, Started) 

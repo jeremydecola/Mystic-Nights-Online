@@ -51,7 +51,7 @@ lobby_counter = 4  # to assign new room_id (avoid collision with your existing t
 
 
 print("---------------------------------")
-print("Mystic Nights Dummy Server v0.6.4")
+print("Mystic Nights Dummy Server v0.6.5")
 print("---------------------------------")
 
 def kill_process_using_port(port):
@@ -399,43 +399,86 @@ def build_lobby_join_ack_2():
     header = struct.pack('<HH', packet_id, packet_len)
     return header + payload
 
-def build_lobby_room_packet(lobby_name, players=None):
-    """
-    Build a 0x03ee Lobby Room Info packet for Mystic Nights.
-    Layout:
-      0x00: packet_id  (2 bytes, little endian)
-      0x02: pkt_len    (2 bytes, little endian)
-      0x02: lobby_owner (2 bytes, 00/01/02/03 for players 1 through 4 respectively)
-      0x02: unknown0
-      0x08: lobby_name (16 bytes, EUC-KR, null-padded)
-      0x18: unknown1   (16 bytes, zero or as needed)
-      0x30: 4 player info blocks, 28 bytes each = 112 bytes
-    """
+def build_lobby_room_packet(lobby_name, players=None, map_idx=1, l_flag=1):
+
+## Build a 0x03ee Lobby Room Info packet for Mystic Nights.
+## 
+## Total payload length: 0x9C (156 bytes)
+## Total packet length:  0x9C + 4 header = 0xA0 (160 bytes)
+## 
+## Header (not part of payload layout):
+##   [0x00–0x01] packet_id   (0x03EE, little endian)
+##   [0x02–0x03] pkt_len     (total payload length = 0x9C)
+## 
+## Payload layout (offsets below start at 0x00, i.e., immediately after header):
+##   [0x00]    lobby_leader     (1 byte: 00/01/02/03 based on position)
+##   [0x01–0x03] padding        (3 bytes: 00 00 00)
+##   [0x04–0x13] lobby_name     (16 bytes, EUC-KR, null-padded)
+##   [0x14–0x23] unknown1       (16 bytes)
+##   [0x24–0x93] player blocks  (4 blocks × 28 bytes = 112 bytes)
+##       Player block layout (28 bytes each):
+##         [0x00–0x07]  player_id   (8 bytes, ASCII, null-padded)
+##         [0x08–0x0C]  reserved    (5 bytes, zero)
+##         [0x0D]       character  (1 byte: character selection)
+##                        - 01: Allen, 02: Henry, 03: Frank, 04: John
+##                          05: Michael, 06: Luke, 07: Kelly, 08: Jane
+##         [0x0E]       status     (1 byte: player status)
+##                        - 00: Not Ready, 01: Ready
+##         [0x0F]       padding    (1 byte: 00)
+##         [0x10–0x13]  rank       (4 bytes: only 1st byte used)
+##                        - E: [00–0A], D: [0B–1E], C: [1F–32], B: [33–5A],
+##                          A: [5B–8C], S: [8D–9F], X: 0x9F01+
+##         [0x14–0x17]  unknown2   (4 bytes)
+##         [0x18–0x1B]  unknown3   (4 bytes)
+##   [0x94–0x97] map_select      (4 bytes: 01/02/03/04/05 00 00 00)
+##   [0x98–0x9B] lobby_flag      (4 bytes: 01/04 00 00 00)
+
+    import struct
+
     packet_id = 0x03ee
-    lobby_owner = b'\x00\x00'
+    lobby_leader = b'\x00'               # Default to lobby leader position 0
+    padding = b'\x00\x00\x00'            # 3-byte padding after leader
     name = lobby_name.encode('euc-kr', errors='replace')[:16].ljust(16, b'\x00')
-    unknown0 = b'\x00' * 2
-    unknown1 = b'\x00' * 16
+    unknown1 = b'\x00' * 16              # Reserved 16-byte field
 
     if players is None:
         players = []
 
     player_structs = []
     for p in (players + [{}]*4)[:4]:
-        # 28 bytes per block, only the first few are meaningful for now
         pid = p.get("player_id", b'\x00' * 8)
         if isinstance(pid, str):
             pid = pid.encode('ascii', errors='replace')[:8].ljust(8, b'\x00')
+
         block = bytearray(28)
-        block[0:8] = pid
-        block[0x0d] = p.get("character", 0)
-        block[0x0e] = p.get("status", 0)
+        block[0:8]   = pid                                # Player ID
+        block[8:13]  = b'\x00' * 5                        # Reserved
+        block[0x0D]  = p.get("character", 0)              # Character select
+        block[0x0E]  = p.get("status", 0)                 # Player status
+        block[0x0F]  = 0                                  # Padding
+        block[0x10:0x14] = struct.pack('<I', p.get("rank", 0))        # Rank (only LSB used)
+        block[0x14:0x18] = struct.pack('<I', p.get("unknown2", 0))    # Unknown field 2
+        block[0x18:0x1C] = struct.pack('<I', p.get("unknown3", 0))    # Unknown field 3
         player_structs.append(bytes(block))
 
-    payload = unknown0 + lobby_owner + name + unknown1 + b''.join(player_structs)
+    # Final 8 bytes: map_select and lobby_flag (each 4 bytes, little-endian)
+    map_select = struct.pack('<I', map_idx)  # Default value 0x01000000
+    lobby_flag = struct.pack('<I', l_flag)  # Default value 0x01000000
+
+    # Assemble full payload
+    payload = (
+        lobby_leader +
+        padding +
+        name +
+        unknown1 +
+        b''.join(player_structs) +
+        map_select +
+        lobby_flag
+    )
+
     header = struct.pack('<HH', packet_id, len(payload))
-    packet = header + payload
-    return packet
+    return header + payload
+
 
 def build_map_select_ack():
     """
@@ -657,12 +700,12 @@ def handle_ip(pkt):
                 response = build_lobby_room_packet(
                     lobby_name,
                     players=[
-                    {"player_id": player_id, "character": 0x01, "status": 0x01},
-                    {"player_id": "JEREMY", "character": 0x06, "status": 0x00},
-                    {"player_id": "DJANGO", "character": 0x03, "status": 0x00},
-                    {"player_id": "FANOUI", "character": 0x08, "status": 0x01}
+                    {"player_id": player_id, "character": 0x01, "status": 0x00, "rank": 0x01},
+                    {"player_id": "JEREMY", "character": 0x06, "status": 0x00, "rank": 0x8d},
+                    {"player_id": "DJANGO", "character": 0x03, "status": 0x00, "rank": 0x34},
+                    {"player_id": "FANOUI", "character": 0x08, "status": 0x01, "rank": 0x0b}
                     # Add more player dicts if desired
-                    ])
+                    ], map_idx = 5, l_flag = 1)
                 pkt_cnt = 0
             elif previous_pkt_id == pkt_id and pkt_cnt == 1:
                 response = build_lobby_join_ack_2()
