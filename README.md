@@ -18,6 +18,12 @@ TBD
 TBD
 
 ## *PROGRESS*
+### 0.6.8
+* NETROOM Logic (in work)
+  * Implemented rudementary Game Start logic (most likely incorrect)
+    * We now reply to 0x7d8 Game Start request packets with a 0xbc0 packet. 
+	* The 0xbc0 packet causes a copy of 0x10 bytes of its payload to memory location 0x39ed6c. It is unclear what data is required at this memory location but it seems to be used in a validation check later on. To be investigated...  
+
 ### 0.6.7
 * NETROOM Logic (in work)
   * Implemented Player Kick logic

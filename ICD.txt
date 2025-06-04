@@ -1,7 +1,7 @@
 ==================================================================
                Mystic Nights Server Interface Control Document
 ==================================================================
-Version: 0.6.7
+Version: 0.6.8
 Date:    2024-06-04
 
 This document describes the binary packet protocol between the Mystic Nights
@@ -45,6 +45,7 @@ I.  Client -> Server Packets
 | Channel List Request     | 0x07d3   | No                 | Client requests list of channels.              |
 | Lobby Create Request     | 0x07d5   | Partial            | Client requests creation of a new lobby.       |
 | Lobby Join Request       | 0x07d6   | Partial            | Client requests to join an existing lobby.     |
+| Game Start Request       | 0x07d8   | Partial            | Client requests to start the game.             |
 | Lobby List Request       | 0x07e0   | No                 | Client requests multiplayer lobby list.        |
 | Login Request            | 0x07d0   | No                 | Client requests to log in.                     |
 | Server List Request      | 0x07df   | No                 | Client requests list of servers.               |
@@ -107,6 +108,19 @@ Lobby Join Request (0x07d6)
 
 > - Server matches `lobby_name` by raw ASCII comparison.
 > - If found and not full, player is added; otherwise, ignored or rejected.
+
+--------------------------------------------------
+Game Start Request (0x07d8)
+--------------------------------------------------
+| Offset | Size | Type     | Field      | Notes                              |
+|--------|------|----------|------------|------------------------------------|
+| 0x00   | 2    | uint16   | packet_id  | Always 0x07d8                      |
+| 0x02   | 2    | uint16   | length     | Payload length (0x000d)            |
+| 0x04   | 0x0D | bytes    | player_id  | ASCII, zero-padded (typically 4 bytes, padded to 0x0D with 0x00) |
+
+> - The player ID is the initiating player.
+> - Sent when a player clicks "Start Game" or equivalent in the lobby menu.
+> - Example: `d8070d0042414241000000000000000000` ("BABA" as player_id)
 
 --------------------------------------------------
 Lobby Leave Request (0x07da)
@@ -186,6 +200,7 @@ II.  Server -> Client Packets
 | Lobby List Response           | 0x0bc8   | Yes                | Returns list of multiplayer lobbies.          |
 | Login Result                  | 0x0bb8   | Yes                | Login result                                  |
 | Server List Response          | 0x0bc7   | Yes                | Returns list of available servers.            |
+| Game Start Response           | 0x0bc0   | Partial            | Sent in response to Game Start request.       |
 | Lobby Leave Ack               | 0x0bc2   | Yes                | Acknowledges lobby leave.                     |
 | Kick Player Ack               | 0x0bc3   | Yes                | Acknowledges player kick request.             |
 | Character Select Setup        | 0x0bc4   | Yes                | Returns 1 player's info for char select.      |
@@ -342,6 +357,23 @@ Player Block (28 bytes; see also 03ee):
 | 0x10   | 4    | uint32  | rank       | Only LSB used                            |
 | 0x14   | 4    | uint32  | unknown2   | Always 0                                 |
 | 0x18   | 4    | uint32  | unknown3   | Always 0                                 |
+
+--------------------------------------------------
+Game Start Response (0x0bc0)
+--------------------------------------------------
+| Offset | Size | Type      | Field        | Notes                                           |
+|--------|------|-----------|--------------|-------------------------------------------------|
+| 0x00   | 2    | uint16    | packet_id    | Always 0x0bc0                                   |
+| 0x02   | 2    | uint16    | payload_len  | Typically 0x0016 (22) or 0x0018 (24)            |
+| 0x04   | 4    | uint8[4]  | flag         | Always 0x01 0x00 0x00 0x00                      |
+| 0x08   | 0x10 | bytes     | player_id    | Copied from request, 0x10 bytes (padded with 0) |
+| 0x18   | 2    | uint16    | param_3      | (uncertain meaning)                             |
+| 0x1A   | 2    | uint16    | param_4      | (uncertain meaning)                             |
+| 0x1C   | 2    | int16     | param_5      | (uncertain meaning)                             |
+
+> - The client expects a 16 byte payload. Sending the player_id with padding for now...
+> - Example response (for "BABA"):
+>   `c00b180001000000424142410000000000000000000000000000000000000000`
 
 --------------------------------------------------
 Lobby Leave Ack (0x0bc2)

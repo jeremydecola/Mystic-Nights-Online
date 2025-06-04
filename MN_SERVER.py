@@ -52,9 +52,9 @@ lobby_counter = 4  # to assign new room_id (avoid collision with your existing t
 # Global lobby state
 current_lobby_name = "TestRoom1"
 current_lobby_players = [
-    {"player_id": "BABA", "character": 0x01, "status": 0x00, "rank": 0x01},
-    {"player_id": "JEREMY", "character": 0x06, "status": 0x00, "rank": 0x8d},
-    {"player_id": "DJANGO", "character": 0x03, "status": 0x00, "rank": 0x34},
+    {"player_id": "BABA", "character": 0x01, "status": 0x01, "rank": 0x01},
+    {"player_id": "JEREMY", "character": 0x06, "status": 0x01, "rank": 0x8d},
+    {"player_id": "DJANGO", "character": 0x03, "status": 0x01, "rank": 0x34},
     {"player_id": "FANOUI", "character": 0x08, "status": 0x01, "rank": 0x0b}
 ]
 current_lobby_map = 1  # Default map index
@@ -62,7 +62,7 @@ current_lobby_flag = 1
 current_lobby_leader = 0
 
 print("---------------------------------")
-print("Mystic Nights Dummy Server v0.6.7")
+print("Mystic Nights Dummy Server v0.6.8")
 print("---------------------------------")
 
 def kill_process_using_port(port):
@@ -550,21 +550,18 @@ def build_character_select_ack():
     header = struct.pack('<HH', packet_id, len(payload))
     return header + payload
 
-def build_bc0_packet(data: bytes, param_3: int, param_4: int, param_5: int) -> bytes:
+def build_game_start_ack(player_id):
     """
-    Build a 0xbc0 packet with standard header and 16 bytes data + 3 shorts.
-    Header: <packet_id:2> <payload_len:2> 01 00 00 00
+    Build a 0xbc0 packet for Game Start Ack, padding player_id to 16 bytes and adding 3 short params.
     """
     import struct
     packet_id = 0xbc0
-    # 4 for flag+unknown, 16 for data, 2+2+2 for shorts
-    payload_len = 4 + 16 + 2 + 2 + 2
-    if len(data) != 16:
-        raise ValueError("data for 0xbc0 packet must be exactly 16 bytes")
-    header = struct.pack('<HH', packet_id, payload_len)
-    flag_and_unknown = b'\x01\x00\x00\x00'
-    payload = struct.pack('<16sHHh', data, param_3, param_4, param_5)
-    return header + flag_and_unknown + payload
+    flag = b'\x01\x00\x00\x00'
+    pid = player_id.encode('ascii')[:16].ljust(16, b'\x00')
+    param3, param4, param5 = 0, 0, 0   # default (can update if you discover what they do)
+    payload = flag + pid + struct.pack('<HHh', param3, param4, param5)
+    header = struct.pack('<HH', packet_id, len(payload))
+    return header + payload
 
 def build_kick_player_ack():
     """
@@ -816,7 +813,23 @@ def handle_ip(pkt):
                 threading.Thread(target=manual_packet_sender, daemon=True).start()
             else:
                 latest_session = session  # update session if new server list requested
-            
+        
+        elif pkt_id == 0x07d8:
+            if len(client_data) >= 8:
+                player_id = client_data[4:8].decode('ascii').rstrip('\x00')
+                print(f"[0x7d8] Game Start request by player: {player_id}")
+                bc0_response = build_game_start_ack(player_id)
+                ether = Ether(dst=session["mac"], src=MY_MAC)
+                ip_layer = IP(src=HOST, dst=ip.src)
+                tcp_layer = TCP(sport=tcp.dport, dport=tcp.sport, flags="PA",
+                                seq=session["seq"] + 1, ack=tcp.seq + len(client_data))
+                sendp(ether/ip_layer/tcp_layer/Raw(load=bc0_response), iface=IFACE, verbose=False)
+                session["seq"] += len(bc0_response)
+                session["ack"] = tcp.seq + len(client_data)
+                print(f"[SEND] Game Start ACK (0xbc0) to {ip.src}:{tcp.sport} ← {bc0_response.hex()}")
+            else:
+                print(f"[ERROR] Malformed 0x07d8 packet (len={len(client_data)})")
+
         elif pkt_id == 0x07da:
             # --- Parse player ID to leave (payload after header, 4+ bytes ASCII) ---
             if len(client_data) >= 8:
