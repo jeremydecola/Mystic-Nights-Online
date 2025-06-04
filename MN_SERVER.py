@@ -18,7 +18,7 @@ IFACE = "OpenVPN TAP-Windows6"
 previous_pkt_id = 0
 pkt_cnt = 0
 tcp_sessions = {}
-accounts = [("AAAA", "AAAA")]  # Store tuples of (username, password)
+accounts = [("BABA", "ABCABC")]  # Store tuples of (username, password)
 allow_manual_send = False
 latest_session = None
 lobbies = {
@@ -49,9 +49,20 @@ lobbies = {
 }
 lobby_counter = 4  # to assign new room_id (avoid collision with your existing test lobbies)
 
+# Global lobby state
+current_lobby_name = "TestRoom1"
+current_lobby_players = [
+    {"player_id": "BABA", "character": 0x01, "status": 0x00, "rank": 0x01},
+    {"player_id": "JEREMY", "character": 0x06, "status": 0x00, "rank": 0x8d},
+    {"player_id": "DJANGO", "character": 0x03, "status": 0x00, "rank": 0x34},
+    {"player_id": "FANOUI", "character": 0x08, "status": 0x01, "rank": 0x0b}
+]
+current_lobby_map = 1  # Default map index
+current_lobby_flag = 1
+current_lobby_leader = 0
 
 print("---------------------------------")
-print("Mystic Nights Dummy Server v0.6.5")
+print("Mystic Nights Dummy Server v0.6.6")
 print("---------------------------------")
 
 def kill_process_using_port(port):
@@ -502,20 +513,42 @@ def send_packet_to_client(session, payload):
     sendp(ether/ip_layer/tcp_layer/Raw(load=payload), iface=IFACE, verbose=False)
     session["seq"] += len(payload)
 
-def build_bc4_packet(data: bytes) -> bytes:
+def build_character_select_setup_packet(player):
     """
-    Build a 0xbc4 packet with the standard header and 32-byte data payload.
-    Header: <packet_id:2> <payload_len:2> 01 00 00 00
+    Build a 0xbc4 packet for one player (32 bytes payload).
     """
     import struct
     packet_id = 0xbc4
-    # 4 for flag+unknown, 32 for data
-    payload_len = 4 + 32
-    if len(data) != 32:
-        raise ValueError("data for 0xbc4 packet must be exactly 32 bytes")
-    header = struct.pack('<HH', packet_id, payload_len)
     flag_and_unknown = b'\x01\x00\x00\x00'
+    # Create the 28-byte player info block, just like 03ee
+    pid = player.get("player_id", b'\x00' * 8)
+    if isinstance(pid, str):
+        pid = pid.encode('ascii', errors='replace')[:8].ljust(8, b'\x00')
+    block = bytearray(28)
+    block[0:8]   = pid
+    block[8:13]  = b'\x00' * 5
+    block[0x0D]  = player.get("character", 0)
+    block[0x0E]  = player.get("status", 0)
+    block[0x0F]  = 0
+    block[0x10:0x14] = struct.pack('<I', player.get("rank", 0))
+    block[0x14:0x18] = struct.pack('<I', player.get("unknown2", 0))
+    block[0x18:0x1C] = struct.pack('<I', player.get("unknown3", 0))
+    # Pad to 32 bytes for bc4
+    data = bytes(block).ljust(32, b'\x00')
+    header = struct.pack('<HH', packet_id, 36)
     return header + flag_and_unknown + data
+
+def build_character_select_ack():
+    """
+    Build a 0xbc5 ACK packet (character select ACK).
+    """
+    import struct
+    packet_id = 0xbc5
+    flag = b'\x01\x00\x00\x00'
+    val = 1
+    payload = flag + struct.pack('<H', val)
+    header = struct.pack('<HH', packet_id, len(payload))
+    return header + payload
 
 def build_bc0_packet(data: bytes, param_3: int, param_4: int, param_5: int) -> bytes:
     """
@@ -552,7 +585,8 @@ def manual_packet_sender():
             print("[ERROR] No session to send to.")
 
 def handle_ip(pkt):
-    global allow_manual_send, latest_session, previous_pkt_id, pkt_cnt
+    global allow_manual_send, latest_session, previous_pkt_id, pkt_cnt, lobby_counter
+    global current_lobby_name, current_lobby_players, current_lobby_map, current_lobby_flag, current_lobby_leader
     if not (pkt.haslayer(IP) and pkt.haslayer(TCP)):
         return
 
@@ -649,36 +683,48 @@ def handle_ip(pkt):
         
         elif pkt_id == 0x07d5:
             player_id, lobby_name, password = parse_lobby_create_packet(client_data)
-            global lobby_counter
+
             if lobby_name not in lobbies:
                 lobbies[lobby_name] = {
                     'room_id': lobby_counter,
                     'name': lobby_name,
                     'password': password,
-                    'max_players': 4,   # can adjust as needed
+                    'max_players': 4,
                     'current_players': 1,
                     'players': [player_id]
                 }
                 lobby_counter += 1
-                print(f"[LOBBY CREATE] '{lobby_name}' created by '{player_id}', password={password}{'(private)' if password else 'none(public)'}")
+                print(f"[LOBBY CREATE] '{lobby_name}' created by '{player_id}', password={password}{'(private)' if password else ' none (public)'}")
+
+                #  Update global lobby state
+                current_lobby_name = lobby_name
+                current_lobby_players = [{
+                    "player_id": player_id,
+                    "character": 0x01,
+                    "status": 0x00,
+                    "rank": 0x01
+                }]
+                current_lobby_map = 1       # Default map
+                current_lobby_flag = 1      # Default flag
+                current_lobby_leader = 0    # Creator is lobby leader
             else:
-                # Already exists? You may want to handle this case.
                 print(f"[LOBBY CREATE] Attempt to recreate existing lobby '{lobby_name}' ignored.")
+
             response = build_lobby_create_ack()
             print(f"[SEND] To {ip.src}:{tcp.sport} ← {response.hex()}")
+
+            latest_session = session
             if not allow_manual_send:
                 allow_manual_send = True
-                latest_session = session
                 threading.Thread(target=manual_packet_sender, daemon=True).start()
-            else:
-                        latest_session = session  # update session if new server list requested
-        
+
         elif pkt_id == 0x07d6:
             player_id, lobby_name = parse_lobby_join_packet(client_data)
             lobby = lobbies.get(lobby_name)
+
+            # Fuzzy match fallback
             if not lobby:
                 for name in lobbies:
-                    # Only strip nulls for both sides; do NOT .upper(), .lower(), or .strip() whitespace!
                     if name.rstrip('\x00') == lobby_name.rstrip('\x00'):
                         lobby = lobbies[name]
                         lobby_name = name
@@ -694,18 +740,34 @@ def handle_ip(pkt):
                         print(f"[LOBBY JOIN] '{lobby_name}' is full! '{player_id}' cannot join.")
                 else:
                     print(f"[LOBBY JOIN] '{player_id}' is already in lobby '{lobby_name}'")
+
+                # Update global lobby state
+                current_lobby_name = lobby_name
+                # Using the global fields as is for development and testing - to be completed later
+                ### current_lobby_players = [
+                ###     {
+                ###         "player_id": pid,
+                ###         "character": tbd
+                ###         "status": 0x00,
+                ###         "rank": getRank(pid)
+                ###     }
+                ###     for i, pid in enumerate(lobby["players"])
+                ### ]
+                current_lobby_players = current_lobby_players # leave unchanged
+                current_lobby_map = current_lobby_map  # leave unchanged
+                current_lobby_leader = current_lobby_leader # leave unchanged
+                current_lobby_flag = 1
             else:
                 print(f"[LOBBY JOIN] Lobby '{lobby_name}' does not exist.")
+
+            # Response chain logic
             if previous_pkt_id == pkt_id and pkt_cnt == 2:
                 response = build_lobby_room_packet(
-                    lobby_name,
-                    players=[
-                    {"player_id": player_id, "character": 0x01, "status": 0x00, "rank": 0x01},
-                    {"player_id": "JEREMY", "character": 0x06, "status": 0x00, "rank": 0x8d},
-                    {"player_id": "DJANGO", "character": 0x03, "status": 0x00, "rank": 0x34},
-                    {"player_id": "FANOUI", "character": 0x08, "status": 0x01, "rank": 0x0b}
-                    # Add more player dicts if desired
-                    ], map_idx = 5, l_flag = 1)
+                    current_lobby_name,
+                    players=current_lobby_players,
+                    map_idx=current_lobby_map,
+                    l_flag=current_lobby_flag
+                )
                 pkt_cnt = 0
             elif previous_pkt_id == pkt_id and pkt_cnt == 1:
                 response = build_lobby_join_ack_2()
@@ -713,13 +775,13 @@ def handle_ip(pkt):
             else:
                 response = build_lobby_join_ack()
                 pkt_cnt = 1
+
             print(f"[SEND] To {ip.src}:{tcp.sport} ← {response.hex()}")
+            latest_session = session
             if not allow_manual_send:
                 allow_manual_send = True
-                latest_session = session
                 threading.Thread(target=manual_packet_sender, daemon=True).start()
-            else:
-                latest_session = session  # update session if new server list requested
+
         
         elif pkt_id == 0x07e0:
             response = build_lobby_list_packet()
@@ -731,17 +793,124 @@ def handle_ip(pkt):
             else:
                 latest_session = session  # update session if new server list requested
 
-        elif pkt_id == 0x07de:
-            response = build_map_select_ack()
-            print(f"[SEND] To {ip.src}:{tcp.sport} ← {response.hex()}")
+        elif pkt_id == 0x07dc:
+            # --- Extract player ID (first 4 bytes of payload after header) ---
+            if len(client_data) >= 8:
+                requested_id = client_data[4:8].decode('ascii').rstrip('\x00')
+                print(f"[0x7dc] Requested player info for: {requested_id}")
+
+                # Find the player in current lobby
+                for p in current_lobby_players:
+                    if p.get("player_id", b"").decode() if isinstance(p.get("player_id"), bytes) else p.get("player_id") == requested_id:
+                        bc4_response = build_character_select_setup_packet(p)
+                        # Save for later use in 0x07dd
+                        session["last_7dc_player_id"] = requested_id
+                        print(f"[SEND] To {ip.src}:{tcp.sport} ← {bc4_response.hex()}")
+                        ether = Ether(dst=session["mac"], src=MY_MAC)
+                        ip_layer = IP(src=HOST, dst=ip.src)
+                        tcp_layer = TCP(sport=tcp.dport, dport=tcp.sport, flags="PA",
+                                        seq=session["seq"] + 1, ack=tcp.seq + len(client_data))
+                        sendp(ether/ip_layer/tcp_layer/Raw(load=bc4_response), iface=IFACE, verbose=False)
+                        session["seq"] += len(bc4_response)
+                        session["ack"] = tcp.seq + len(client_data)
+                        break
+                else:
+                    print(f"[WARN] Player {requested_id} not found for 0x7dc")
+            else:
+                print(f"[ERROR] 0x07dc packet too short")
+            latest_session = session
             if not allow_manual_send:
                 allow_manual_send = True
-                latest_session = session
                 threading.Thread(target=manual_packet_sender, daemon=True).start()
+
+        elif pkt_id == 0x07dd:
+            # --- Parse the selected character byte from payload ---
+            if len(client_data) >= 8:
+                char_val = client_data[4]
+                print(f"[0x7dd] Client selected character: {char_val}")
+
+                # Find the last requested player from 0x7dc
+                requested_id = session.get("last_7dc_player_id")
+                updated = False
+                if requested_id:
+                    for p in current_lobby_players:
+                        pid = p.get("player_id", b"").decode() if isinstance(p.get("player_id"), bytes) else p.get("player_id")
+                        if pid == requested_id:
+                            print(f"[0x7dd] Updating player {pid} character to {char_val}")
+                            p["character"] = char_val
+                            updated = True
+                            break
+                    if not updated:
+                        print(f"[WARN] 0x07dd: player {requested_id} not found in current_lobby_players")
+
+                # Send 0xbc5 ACK
+                ack_packet = build_character_select_ack()
+                ether = Ether(dst=session["mac"], src=MY_MAC)
+                ip_layer = IP(src=HOST, dst=ip.src)
+                tcp_layer = TCP(sport=tcp.dport, dport=tcp.sport, flags="PA",
+                                seq=session["seq"] + 1, ack=tcp.seq + len(client_data))
+                sendp(ether/ip_layer/tcp_layer/Raw(load=ack_packet), iface=IFACE, verbose=False)
+                session["seq"] += len(ack_packet)
+                session["ack"] = tcp.seq + len(client_data)
+                print(f"[SEND] Character Select ACK (0xbc5) to {ip.src}:{tcp.sport} ← {ack_packet.hex()}")
+
+                # Immediately follow with an updated 0x03ee packet
+                room_packet = build_lobby_room_packet(
+                    lobby_name=current_lobby_name,
+                    players=current_lobby_players,
+                    map_idx=current_lobby_map,
+                    l_flag=current_lobby_flag
+                )
+                ether2 = Ether(dst=session["mac"], src=MY_MAC)
+                tcp_layer2 = TCP(sport=tcp.dport, dport=tcp.sport, flags="PA",
+                                 seq=session["seq"] + 1, ack=session["ack"])
+                sendp(ether2/ip_layer/tcp_layer2/Raw(load=room_packet), iface=IFACE, verbose=False)
+                session["seq"] += len(room_packet)
+                print(f"[SEND] Updated Lobby Room Packet (0x03ee) after char select to {ip.src}:{tcp.sport}")
             else:
-                latest_session = session  # update session if new server list requested
-        else:
-            print(f"[WARN] Unhandled packet ID: {pkt_id}")
+                print(f"[ERROR] Malformed 0x07dd packet (len={len(client_data)})")
+            latest_session = session
+            if not allow_manual_send:
+                allow_manual_send = True
+                threading.Thread(target=manual_packet_sender, daemon=True).start()
+
+        elif pkt_id == 0x07de:
+            if len(client_data) >= 8:
+                desired_map = struct.unpack('<I', client_data[4:8])[0]
+                print(f"[MAP SELECT] Client requested map index: {desired_map}")
+                current_lobby_map = desired_map  # Update global state
+
+                # First send ACK (0x0BC6)
+                ack_packet = build_map_select_ack()
+                ether = Ether(dst=session["mac"], src=MY_MAC)
+                ip_layer = IP(src=HOST, dst=ip.src)
+                tcp_layer = TCP(sport=tcp.dport, dport=tcp.sport, flags="PA",
+                                seq=session["seq"] + 1, ack=tcp.seq + len(client_data))
+                sendp(ether/ip_layer/tcp_layer/Raw(load=ack_packet), iface=IFACE, verbose=False)
+                session["seq"] += len(ack_packet)
+                session["ack"] = tcp.seq + len(client_data)
+                print(f"[SEND] Map Select ACK to {ip.src}:{tcp.sport} ← {ack_packet.hex()}")
+
+                # Then send updated 0x03ee lobby state
+                room_packet = build_lobby_room_packet(
+                    lobby_name=current_lobby_name,
+                    players=current_lobby_players,
+                    map_idx=current_lobby_map,
+                    l_flag=current_lobby_flag
+                )
+                ether2 = Ether(dst=session["mac"], src=MY_MAC)
+                tcp_layer2 = TCP(sport=tcp.dport, dport=tcp.sport, flags="PA",
+                                 seq=session["seq"] + 1, ack=session["ack"])
+                sendp(ether2/ip_layer/tcp_layer2/Raw(load=room_packet), iface=IFACE, verbose=False)
+                session["seq"] += len(room_packet)
+                print(f"[SEND] Lobby Room Packet (0x03ee) with map={desired_map} to {ip.src}:{tcp.sport}")
+            else:
+                print(f"[ERROR] Malformed 0x07de packet (len={len(client_data)})")
+            latest_session = session
+            if not allow_manual_send:
+                allow_manual_send = True
+                threading.Thread(target=manual_packet_sender, daemon=True).start()
+
 
         if response:
             ether = Ether(dst=session["mac"], src=MY_MAC)

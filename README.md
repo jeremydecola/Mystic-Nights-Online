@@ -18,6 +18,15 @@ TBD
 TBD
 
 ## *PROGRESS*
+### 0.6.6
+* NETROOM Logic (in work)
+  * Implemented Map Select logic
+    * We now reply to 0x7de Map Select packets with a 0xbc6 ACK and a follow-up lobby info update that sets the lobby's Map field to match the requested map index number parsed from 0x7de.
+  * Discovered and Implemented Character Select logic 
+    * Client first sends 0x7dc packet with player ID.
+	* We reply with a 0xbc4 packet which allows the client to transition into sending a 0x7dd packet. The required contents of the 0x20 of data that is copied from the payload of the 0xbc4 reply to memory location 0x39ed7c remains unclear - for now we are sending the requested player's information. The 0x7dd packet contains the select character index in its payload.
+	* We now reply to 0x7dd Character Select packets with a 0xbc5 ACK and a follow-up lobby info update that sets the active player's character field to match the requested character index number parsed from 0x7dd. 
+  
 ### 0.6.5
 * NETROOM Logic (in work)
   * Discovered value range for E,D,C,B,A,S RANK values.

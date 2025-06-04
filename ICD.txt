@@ -1,8 +1,8 @@
 ==================================================================
                Mystic Nights Server Interface Control Document
 ==================================================================
-Version: 0.6.3
-Date:    2024-05-28
+Version: 0.6.6
+Date:    2024-06-04
 
 This document describes the binary packet protocol between the Mystic Nights
 game client and server. Packets are listed by direction, with structure
@@ -15,9 +15,9 @@ definitions and descriptions where available.
 | 0x0bc8         | FUN_00213c80       Lobby List Packet           |
 | 0x0bbb         | FUN_002112f0       Channel List Packet         |
 | 0x0bc7         | FUN_0021c910       Server List Packet          |
-| 0x0bc6         | FUN_0021e490                                   |
-| 0x0bc5         | FUN_0021e4c0       Character Select Packet?    |
-| 0x0bc4         | FUN_0021e4f0                                   |
+| 0x0bc6         | FUN_0021e490       Map Select Ack              |
+| 0x0bc5         | FUN_0021e4c0       Character Select Ack        |
+| 0x0bc4         | FUN_0021e4f0       Character Select Setup      |
 | 0x0bc3         | FUN_0021e560                                   |
 | 0x0bc2         | FUN_0021e590                                   |
 | 0x0bc1         | FUN_0021e5c0                                   |
@@ -26,10 +26,10 @@ definitions and descriptions where available.
 | 0x0bbe         | FUN_00213c50       Lobby Join Ack              |
 | 0x0bbd         | FUN_002120f0       Lobby Create Ack            |
 | 0x0bbc         | FUN_002112c0       Channel Join Ack            |
-| 0x0bba         | FUN_00219ed0       Account ?Create/Delete? Ack |
-| 0x0bb9         | FUN_00219ed0       Account ?Create/Delete? Ack |
+| 0x0bba         | FUN_00219ed0       Account Create/Delete Ack   |
+| 0x0bb9         | FUN_00219ed0       Account Create/Delete Ack   |
 | 0x0bb8 (3000)  | FUN_00203cf0       Login Ack                   |
-| 0x03ee         | FUN_0021e6c0                                   |
+| 0x03ee         | FUN_0021e6c0       Lobby Data Packet           |
 | 0x03e9         | FUN_0011cd30                                   |
 +----------------+------------------------------------------------+
 
@@ -48,6 +48,9 @@ I.  Client -> Server Packets
 | Lobby List Request       | 0x07e0   | No                 | Client requests multiplayer lobby list.        |
 | Login Request            | 0x07d0   | No                 | Client requests to log in.                     |
 | Server List Request      | 0x07df   | No                 | Client requests list of servers.               |
+| Character Select Query   | 0x07dc   | Yes                | Client requests info for character selection.  |
+| Character Select Commit  | 0x07dd   | Yes                | Client commits character selection.            |
+| Map Select Request       | 0x07de   | Yes                | Client requests map select in lobby.           |
 +--------------------------+----------+--------------------+------------------------------------------------+
 
 --------------------------------------------------
@@ -103,6 +106,42 @@ Lobby Join Request (0x07d6)
 > - Server matches `lobby_name` by raw ASCII comparison.
 > - If found and not full, player is added; otherwise, ignored or rejected.
 
+--------------------------------------------------
+Character Select Query (0x07dc) 
+--------------------------------------------------
+| Offset | Size | Type     | Field      | Notes                          |
+|--------|------|----------|------------|--------------------------------|
+| 0x00   | 2    | uint16   | packet_id  | Always 0x07dc                  |
+| 0x02   | 2    | uint16   | length     | Payload length (always 0x08)   |
+| 0x04   | 4    | char[4]  | player_id  | ASCII, zero-padded             |
+
+- Sent repeatedly by client during character select menu.
+- Server must reply with 0xbc4 (Character Select Setup) for the requested player.
+
+--------------------------------------------------
+Character Select Commit (0x07dd) 
+--------------------------------------------------
+| Offset | Size | Type     | Field      | Notes                          |
+|--------|------|----------|------------|--------------------------------|
+| 0x00   | 2    | uint16   | packet_id  | Always 0x07dd                  |
+| 0x02   | 2    | uint16   | length     | Payload length (always 0x08)   |
+| 0x04   | 1    | uint8    | character  | Character value (1-8)          |
+| 0x05   | 3    | uint8[3] | padding    | 0x00                           |
+
+- Sent when client confirms character select.
+- Server must:
+  1. Reply with 0xbc5 (Character Select ACK)
+  2. Immediately follow with updated 0x03ee reflecting the change
+
+--------------------------------------------------
+Map Select Request (0x07de) 
+--------------------------------------------------
+| Offset | Size | Type     | Field      | Notes                          |
+|--------|------|----------|------------|--------------------------------|
+| 0x00   | 2    | uint16   | packet_id  | Always 0x07de                  |
+| 0x02   | 2    | uint16   | length     | Payload length (always 0x08)   |
+| 0x04   | 4    | uint32le | map_index  | Little-endian (1-5)            |
+
 ==================================================================
 II.  Server -> Client Packets
 ==================================================================
@@ -119,6 +158,10 @@ II.  Server -> Client Packets
 | Lobby List Response           | 0x0bc8   | Yes                | Returns list of multiplayer lobbies.          |
 | Login Result                  | 0x0bb8   | Yes                | Login result                                 |
 | Server List Response          | 0x0bc7   | Yes                | Returns list of available servers.            |
+| Character Select Setup        | 0x0bc4   | Yes                | Returns 1 player's info for char select.      |
+| Character Select Ack          | 0x0bc5   | Yes                | ACK for character commit.                     |
+| Map Select Ack                | 0x0bc6   | Yes                | ACK for map selection.                        |
+| Lobby Room State              | 0x03ee   | Yes                | Full lobby state including map/players.       |
 +-------------------------------+----------+--------------------+-----------------------------------------------+
 
 --------------------------------------------------
@@ -246,6 +289,71 @@ Each Server Entry (44 bytes):
 | 0x15   | 16   | char[16]  | ip_ascii   | ASCII IP+null, pad   |
 | 0x25   | 3    | uint8[3]  | reserved2  | 0x00                 |
 | 0x28   | 4    | int32     | avail      | -1, 0, 1, 2          |
+
+--------------------------------------------------
+Character Select Setup (0x0bc4)
+--------------------------------------------------
+| Offset | Size | Type     | Field      | Notes                                    |
+|--------|------|----------|------------|------------------------------------------|
+| 0x00   | 2    | uint16   | packet_id  | 0x0bc4                                   |
+| 0x02   | 2    | uint16   | payload_len| 0x24 (36)                                |
+| 0x04   | 1    | uint8    | flag       | Always 1                                 |
+| 0x05   | 3    | uint8[3] | unknown    | Always 0                                 |
+| 0x08   | 28   | struct   | player     | See 03ee player block, for 1 player only |
+
+Player Block (28 bytes; see also 03ee):
+| Offset | Size | Type    | Field      | Notes                                    |
+|--------|------|---------|------------|------------------------------------------|
+| 0x00   | 8    | char[8] | player_id  | ASCII, zero-padded                       |
+| 0x08   | 5    | uint8   | reserved   | Always 0                                 |
+| 0x0D   | 1    | uint8   | character  | 1-8                                      |
+| 0x0E   | 1    | uint8   | status     | 0=not ready, 1=ready                     |
+| 0x0F   | 1    | uint8   | padding    | Always 0                                 |
+| 0x10   | 4    | uint32  | rank       | Only LSB used                            |
+| 0x14   | 4    | uint32  | unknown2   | Always 0                                 |
+| 0x18   | 4    | uint32  | unknown3   | Always 0                                 |
+
+--------------------------------------------------
+Character Select Ack (0x0bc5)
+--------------------------------------------------
+| Offset | Size | Type     | Field      | Notes                                    |
+|--------|------|----------|------------|------------------------------------------|
+| 0x00   | 2    | uint16   | packet_id  | 0x0bc5                                   |
+| 0x02   | 2    | uint16   | payload_len| 0x06                                     |
+| 0x04   | 1    | uint8    | flag       | Always 1                                 |
+| 0x05   | 3    | uint8[3] | unknown    | Always 0                                 |
+| 0x08   | 2    | uint16   | value      | Always 1                                 |
+
+--------------------------------------------------
+Map Select Ack (0x0bc6)
+--------------------------------------------------
+Same as 0x0bc5 but packet_id is 0x0bc6.
+
+--------------------------------------------------
+Lobby Room State (0x03ee)
+--------------------------------------------------
+| Offset | Size    | Type      | Field         | Notes                                  |
+|--------|---------|-----------|---------------|----------------------------------------|
+| 0x00   | 2       | uint16    | packet_id     | 0x03ee                                 |
+| 0x02   | 2       | uint16    | payload_len   | 0x9c                                   |
+| 0x04   | 1       | uint8     | lobby_leader  | 0,1,2,3                                |
+| 0x05   | 3       | uint8[3]  | padding       | Always 0                               |
+| 0x08   | 16      | char[16]  | lobby_name    | EUC-KR, padded 0x00                    |
+| 0x18   | 16      | uint8[16] | unknown       | Always 0                               |
+| 0x28   | 28*4    | struct[]  | players       | Up to 4                                |
+| 0x98   | 4       | uint32le  | map_select    | 1-5                                    |
+| 0x9c   | 4       | uint32le  | lobby_flag    | Usually 1                              |
+
+Player Block (see above).
+
+==================================================================
+Character/Map Select Protocol (v0.6.6)
+==================================================================
+- For character select, the client will loop sending 0x07dc packets (one per player).
+- The server must reply to each 0x07dc with a 0x0bc4 containing the exact player’s info.
+- Once the user chooses a character and presses confirm, the client sends a 0x07dd with the new character value.
+- Server must ACK with 0x0bc5, then immediately update the relevant player’s character field and send a new 0x03ee lobby room packet.
+- Map select uses a nearly identical handshake: 0x07de → 0x0bc6 → 0x03ee (with updated map_idx).
 
 ==================================================================
 Notes
