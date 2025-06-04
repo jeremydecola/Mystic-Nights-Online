@@ -18,6 +18,13 @@ TBD
 TBD
 
 ## *PROGRESS*
+### 0.6.7
+* NETROOM Logic (in work)
+  * Implemented Player Kick logic
+    * We now reply to 0x7db Player Kick packets with a 0xbc3 ACK and a follow-up lobby info update that removes the player at the index number parsed from 0x7db.
+  * Implemented Lobby Leave logic
+    * We now reply to 0x7da Lobby Leave packets with a 0xbc2 ACK and remove the player from the Lobby (server side) - no follow-up packet necessary. 
+	
 ### 0.6.6
 * NETROOM Logic (in work)
   * Implemented Map Select logic

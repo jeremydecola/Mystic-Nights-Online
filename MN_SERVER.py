@@ -62,7 +62,7 @@ current_lobby_flag = 1
 current_lobby_leader = 0
 
 print("---------------------------------")
-print("Mystic Nights Dummy Server v0.6.6")
+print("Mystic Nights Dummy Server v0.6.7")
 print("---------------------------------")
 
 def kill_process_using_port(port):
@@ -566,6 +566,30 @@ def build_bc0_packet(data: bytes, param_3: int, param_4: int, param_5: int) -> b
     payload = struct.pack('<16sHHh', data, param_3, param_4, param_5)
     return header + flag_and_unknown + payload
 
+def build_kick_player_ack():
+    """
+    Build a 0xbc3 ACK packet (kick player ACK).
+    """
+    import struct
+    packet_id = 0xbc3
+    flag = b'\x01\x00\x00\x00'
+    val = 1
+    payload = flag + struct.pack('<H', val)
+    header = struct.pack('<HH', packet_id, len(payload))
+    return header + payload
+
+def build_lobby_leave_ack():
+    """
+    Build a 0xbc2 ACK packet (lobby leave ACK).
+    """
+    import struct
+    packet_id = 0xbc2
+    flag = b'\x01\x00\x00\x00'
+    val = 1
+    payload = flag + struct.pack('<H', val)
+    header = struct.pack('<HH', packet_id, len(payload))
+    return header + payload
+
 def manual_packet_sender():
     global latest_session
     print("[INFO] Manual packet sending ENABLED. Type hex bytes (e.g. 0bc700...):")
@@ -792,6 +816,88 @@ def handle_ip(pkt):
                 threading.Thread(target=manual_packet_sender, daemon=True).start()
             else:
                 latest_session = session  # update session if new server list requested
+            
+        elif pkt_id == 0x07da:
+            # --- Parse player ID to leave (payload after header, 4+ bytes ASCII) ---
+            if len(client_data) >= 8:
+                player_id = client_data[4:8].decode('ascii').rstrip('\x00')
+                print(f"[0x07da] Lobby leave request for player: {player_id}")
+
+                # Send ACK (0xbc2)
+                ack_packet = build_lobby_leave_ack()
+                ether = Ether(dst=session["mac"], src=MY_MAC)
+                ip_layer = IP(src=HOST, dst=ip.src)
+                tcp_layer = TCP(sport=tcp.dport, dport=tcp.sport, flags="PA",
+                                seq=session["seq"] + 1, ack=tcp.seq + len(client_data))
+                sendp(ether/ip_layer/tcp_layer/Raw(load=ack_packet), iface=IFACE, verbose=False)
+                session["seq"] += len(ack_packet)
+                session["ack"] = tcp.seq + len(client_data)
+                print(f"[SEND] Lobby Leave ACK (0xbc2) to {ip.src}:{tcp.sport} ← {ack_packet.hex()}")
+
+                # Remove player from current lobby
+                removed = False
+                for i, p in enumerate(current_lobby_players):
+                    pid = p.get("player_id", b"").decode() if isinstance(p.get("player_id"), bytes) else p.get("player_id")
+                    if pid == player_id:
+                        removed_player = current_lobby_players.pop(i)
+                        print(f"[LEAVE] Removed player: {removed_player.get('player_id')}")
+                        removed = True
+                        break
+                if not removed:
+                    print(f"[WARN] Player {player_id} not found for 0x07da leave")
+            else:
+                print(f"[ERROR] 0x07da lobby leave packet too short")
+
+            latest_session = session
+            if not allow_manual_send:
+                allow_manual_send = True
+                threading.Thread(target=manual_packet_sender, daemon=True).start()
+
+        elif pkt_id == 0x07db:
+            # Parse the player index to be kicked (payload at offset 4, 4 bytes little-endian)
+            if len(client_data) >= 8:
+                kick_idx = struct.unpack('<I', client_data[4:8])[0]
+                print(f"[0x07db] Kick request: remove player at index {kick_idx}")
+
+                # ACK the kick with 0xbc3
+                ack_packet = build_kick_player_ack()
+                ether = Ether(dst=session["mac"], src=MY_MAC)
+                ip_layer = IP(src=HOST, dst=ip.src)
+                tcp_layer = TCP(sport=tcp.dport, dport=tcp.sport, flags="PA",
+                                seq=session["seq"] + 1, ack=tcp.seq + len(client_data))
+                sendp(ether/ip_layer/tcp_layer/Raw(load=ack_packet), iface=IFACE, verbose=False)
+                session["seq"] += len(ack_packet)
+                session["ack"] = tcp.seq + len(client_data)
+                print(f"[SEND] Kick Player ACK (0xbc3) to {ip.src}:{tcp.sport} ← {ack_packet.hex()}")
+
+                # Remove the player at that index from current_lobby_players
+                if 0 <= kick_idx < len(current_lobby_players):
+                    kicked = current_lobby_players.pop(kick_idx)
+                    print(f"[KICK] Removed player: {kicked.get('player_id')}")
+                else:
+                    print(f"[WARN] Invalid kick index: {kick_idx}")
+
+                # Send updated 0x03ee lobby packet
+                room_packet = build_lobby_room_packet(
+                    lobby_name=current_lobby_name,
+                    players=current_lobby_players,
+                    map_idx=current_lobby_map,
+                    l_flag=current_lobby_flag
+                )
+                ether2 = Ether(dst=session["mac"], src=MY_MAC)
+                tcp_layer2 = TCP(sport=tcp.dport, dport=tcp.sport, flags="PA",
+                                 seq=session["seq"] + 1, ack=session["ack"])
+                sendp(ether2/ip_layer/tcp_layer2/Raw(load=room_packet), iface=IFACE, verbose=False)
+                session["seq"] += len(room_packet)
+                print(f"[SEND] Updated Lobby Room Packet (0x03ee) after kick to {ip.src}:{tcp.sport}")
+
+            else:
+                print(f"[ERROR] Malformed 0x07db kick packet (len={len(client_data)})")
+
+            latest_session = session
+            if not allow_manual_send:
+                allow_manual_send = True
+                threading.Thread(target=manual_packet_sender, daemon=True).start()
 
         elif pkt_id == 0x07dc:
             # --- Extract player ID (first 4 bytes of payload after header) ---

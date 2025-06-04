@@ -1,7 +1,7 @@
 ==================================================================
                Mystic Nights Server Interface Control Document
 ==================================================================
-Version: 0.6.6
+Version: 0.6.7
 Date:    2024-06-04
 
 This document describes the binary packet protocol between the Mystic Nights
@@ -18,8 +18,8 @@ definitions and descriptions where available.
 | 0x0bc6         | FUN_0021e490       Map Select Ack              |
 | 0x0bc5         | FUN_0021e4c0       Character Select Ack        |
 | 0x0bc4         | FUN_0021e4f0       Character Select Setup      |
-| 0x0bc3         | FUN_0021e560                                   |
-| 0x0bc2         | FUN_0021e590                                   |
+| 0x0bc3         | FUN_0021e560       Player Kick Ack             |
+| 0x0bc2         | FUN_0021e590       Lobby Leave Ack             |
 | 0x0bc1         | FUN_0021e5c0                                   |
 | 0x0bc0         | FUN_0021e5f0                                   |
 | 0x0bbf         | FUN_00213c50       Lobby Join Ack              |
@@ -48,6 +48,8 @@ I.  Client -> Server Packets
 | Lobby List Request       | 0x07e0   | No                 | Client requests multiplayer lobby list.        |
 | Login Request            | 0x07d0   | No                 | Client requests to log in.                     |
 | Server List Request      | 0x07df   | No                 | Client requests list of servers.               |
+| Lobby Leave Request      | 0x07da   | Yes                | Client requests for player to leave the lobby. |
+| Kick Player Request      | 0x07db   | Yes                | Client requests another player to be kicked.   |
 | Character Select Query   | 0x07dc   | Yes                | Client requests info for character selection.  |
 | Character Select Commit  | 0x07dd   | Yes                | Client commits character selection.            |
 | Map Select Request       | 0x07de   | Yes                | Client requests map select in lobby.           |
@@ -107,6 +109,32 @@ Lobby Join Request (0x07d6)
 > - If found and not full, player is added; otherwise, ignored or rejected.
 
 --------------------------------------------------
+Lobby Leave Request (0x07da)
+--------------------------------------------------
+| Offset | Size | Type     | Field      | Notes                        |
+|--------|------|----------|------------|------------------------------|
+| 0x00   | 2    | uint16   | packet_id  | Always 0x07da                |
+| 0x02   | 2    | uint16   | length     | Payload length (usually 0x0d)|
+| 0x04   | 4    | char[4]  | player_id  | ASCII/EUC-KR, zero-padded    |
+| 0x08   | ...  | unknown  | padding    | Typically all 0x00           |
+
+- The server must reply with a 0x0bc2 ACK (Lobby Leave Ack).
+- After ACK, the server removes the player from the lobby.
+- No follow-up packets are required.
+
+--------------------------------------------------
+Kick Player Request (0x07db)
+--------------------------------------------------
+| Offset | Size | Type     | Field        | Notes                                |
+|--------|------|----------|--------------|--------------------------------------|
+| 0x00   | 2    | uint16   | packet_id    | Always 0x07db                        |
+| 0x02   | 2    | uint16   | length       | Payload length (usually 0x04)        |
+| 0x04   | 4    | uint32   | player_index | Index of player to remove (0–3)      |
+
+- The server must first reply with a 0x0bc3 ACK.
+- The server must then remove the player at `player_index` from the lobby and send an updated 0x03ee Lobby Room Info packet to all players in the lobby.
+
+--------------------------------------------------
 Character Select Query (0x07dc) 
 --------------------------------------------------
 | Offset | Size | Type     | Field      | Notes                          |
@@ -156,8 +184,10 @@ II.  Server -> Client Packets
 | Lobby Create Ack              | 0x0bbd   | Yes                | Acknowledges successful lobby creation.       |
 | Lobby Join Ack                | 0x0bbe   | Yes                | Acknowledges successful lobby join.           |
 | Lobby List Response           | 0x0bc8   | Yes                | Returns list of multiplayer lobbies.          |
-| Login Result                  | 0x0bb8   | Yes                | Login result                                 |
+| Login Result                  | 0x0bb8   | Yes                | Login result                                  |
 | Server List Response          | 0x0bc7   | Yes                | Returns list of available servers.            |
+| Lobby Leave Ack               | 0x0bc2   | Yes                | Acknowledges lobby leave.                     |
+| Kick Player Ack               | 0x0bc3   | Yes                | Acknowledges player kick request.             |
 | Character Select Setup        | 0x0bc4   | Yes                | Returns 1 player's info for char select.      |
 | Character Select Ack          | 0x0bc5   | Yes                | ACK for character commit.                     |
 | Map Select Ack                | 0x0bc6   | Yes                | ACK for map selection.                        |
@@ -312,6 +342,26 @@ Player Block (28 bytes; see also 03ee):
 | 0x10   | 4    | uint32  | rank       | Only LSB used                            |
 | 0x14   | 4    | uint32  | unknown2   | Always 0                                 |
 | 0x18   | 4    | uint32  | unknown3   | Always 0                                 |
+
+--------------------------------------------------
+Lobby Leave Ack (0x0bc2)
+--------------------------------------------------
+| Offset | Size | Type     | Field     | Notes                       |
+|--------|------|----------|-----------|-----------------------------|
+| 0x00   | 2    | uint16   | packet_id | 0x0bc2                      |
+| 0x02   | 2    | uint16   | length    | Always 0x0006               |
+| 0x04   | 4    | uint8[4] | flag      | Always 0x01 00 00 00        |
+| 0x08   | 2    | uint16   | status    | Always 0x0001               |
+
+--------------------------------------------------
+Kick Player Ack (0x0bc3)
+--------------------------------------------------
+| Offset | Size | Type     | Field     | Notes                       |
+|--------|------|----------|-----------|-----------------------------|
+| 0x00   | 2    | uint16   | packet_id | 0x0bc3                      |
+| 0x02   | 2    | uint16   | length    | Always 0x0006               |
+| 0x04   | 4    | uint8[4] | flag      | Always 0x01 00 00 00        |
+| 0x08   | 2    | uint16   | status    | Always 0x0001               |
 
 --------------------------------------------------
 Character Select Ack (0x0bc5)
