@@ -18,6 +18,13 @@ TBD
 TBD
 
 ## *PROGRESS*
+### 0.7.0
+* Overhaul of code for future DB integration
+* NETROOM Logic (in work)
+  * Implemented Player Ready (Game Ready) logic 
+    * We now reply to 0x7d9 Game/Player Ready request packets with a 0xbc1 packet. 
+	* We are able to press the "O" button again to toggle player ready status. While "Ready", the client is unresponsive to all button presses except "O".
+
 ### 0.6.8
 * NETROOM Logic (in work)
   * Implemented rudementary Game Start logic (most likely incorrect)

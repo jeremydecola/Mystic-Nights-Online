@@ -1,8 +1,8 @@
 ==================================================================
                Mystic Nights Server Interface Control Document
 ==================================================================
-Version: 0.6.8
-Date:    2024-06-04
+Version: 0.7.0
+Date:    2024-06-10
 
 This document describes the binary packet protocol between the Mystic Nights
 game client and server. Packets are listed by direction, with structure
@@ -20,8 +20,8 @@ definitions and descriptions where available.
 | 0x0bc4         | FUN_0021e4f0       Character Select Setup      |
 | 0x0bc3         | FUN_0021e560       Player Kick Ack             |
 | 0x0bc2         | FUN_0021e590       Lobby Leave Ack             |
-| 0x0bc1         | FUN_0021e5c0                                   |
-| 0x0bc0         | FUN_0021e5f0                                   |
+| 0x0bc1         | FUN_0021e5c0       Player Ready Ack            |
+| 0x0bc0         | FUN_0021e5f0       Game Start Packet           |
 | 0x0bbf         | FUN_00213c50       Lobby Join Ack              |
 | 0x0bbe         | FUN_00213c50       Lobby Join Ack              |
 | 0x0bbd         | FUN_002120f0       Lobby Create Ack            |
@@ -45,7 +45,8 @@ I.  Client -> Server Packets
 | Channel List Request     | 0x07d3   | No                 | Client requests list of channels.              |
 | Lobby Create Request     | 0x07d5   | Partial            | Client requests creation of a new lobby.       |
 | Lobby Join Request       | 0x07d6   | Partial            | Client requests to join an existing lobby.     |
-| Game Start Request       | 0x07d8   | Partial            | Client requests to start the game.             |
+| Game Start Request       | 0x07d8   | Partial            | Client requests to start the game.       
+| Game Start Request       | 0x07d9   | Yes                | Client requests to toggle player ready status. |
 | Lobby List Request       | 0x07e0   | No                 | Client requests multiplayer lobby list.        |
 | Login Request            | 0x07d0   | No                 | Client requests to log in.                     |
 | Server List Request      | 0x07df   | No                 | Client requests list of servers.               |
@@ -120,7 +121,22 @@ Game Start Request (0x07d8)
 
 > - The player ID is the initiating player.
 > - Sent when a player clicks "Start Game" or equivalent in the lobby menu.
+> - "Start Game" is only available in the lobby menu if the player is the lobby leader.
 > - Example: `d8070d0042414241000000000000000000` ("BABA" as player_id)
+
+--------------------------------------------------
+Player Ready Request (0x07d9)
+--------------------------------------------------
+| Offset | Size | Type     | Field      | Notes                              |
+|--------|------|----------|------------|------------------------------------|
+| 0x00   | 2    | uint16   | packet_id  | Always 0x07d8                      |
+| 0x02   | 2    | uint16   | length     | Payload length (0x000d)            |
+| 0x04   | 0x0D | bytes    | player_id  | ASCII, zero-padded (typically 4 bytes, padded to 0x0D with 0x00) |
+
+> - The player ID is the initiating player.
+> - Sent when a player clicks "Game Ready" or equivalent in the lobby menu.
+> - "Game Ready" is only available in the lobby menu if the player is NOT the lobby leader.
+> - Example: `d9070d0042414241000000000000000000` ("BABA" as player_id)
 
 --------------------------------------------------
 Lobby Leave Request (0x07da)
@@ -184,6 +200,8 @@ Map Select Request (0x07de)
 | 0x02   | 2    | uint16   | length     | Payload length (always 0x08)   |
 | 0x04   | 4    | uint32le | map_index  | Little-endian (1-5)            |
 
+> - "Map Select" is only available in the lobby menu if the player is the lobby leader.
+
 ==================================================================
 II.  Server -> Client Packets
 ==================================================================
@@ -201,6 +219,7 @@ II.  Server -> Client Packets
 | Login Result                  | 0x0bb8   | Yes                | Login result                                  |
 | Server List Response          | 0x0bc7   | Yes                | Returns list of available servers.            |
 | Game Start Response           | 0x0bc0   | Partial            | Sent in response to Game Start request.       |
+| Player Ready Ack              | 0x0bc1   | Yes                | Sent in response to Player Ready request.     |
 | Lobby Leave Ack               | 0x0bc2   | Yes                | Acknowledges lobby leave.                     |
 | Kick Player Ack               | 0x0bc3   | Yes                | Acknowledges player kick request.             |
 | Character Select Setup        | 0x0bc4   | Yes                | Returns 1 player's info for char select.      |
@@ -374,6 +393,18 @@ Game Start Response (0x0bc0)
 > - The client expects a 16 byte payload. Sending the player_id with padding for now...
 > - Example response (for "BABA"):
 >   `c00b180001000000424142410000000000000000000000000000000000000000`
+
+--------------------------------------------------
+Player Ready Ack (0x0bc1)
+--------------------------------------------------
+| Offset | Size | Type     | Field     | Notes                       |
+|--------|------|----------|-----------|-----------------------------|
+| 0x00   | 2    | uint16   | packet_id | 0x0bc1                      |
+| 0x02   | 2    | uint16   | length    | Always 0x0006               |
+| 0x04   | 4    | uint8[4] | flag      | Always 0x01 00 00 00        |
+| 0x08   | 2    | uint16   | status    | Always 0x0001               |
+
+> - The client expects a follow-up updated lobby room packet with the corresponding player's status toggled. 
 
 --------------------------------------------------
 Lobby Leave Ack (0x0bc2)
