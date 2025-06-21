@@ -18,6 +18,12 @@ TBD
 TBD
 
 ## *PROGRESS*
+### 0.7.1
+* Added session player_id tracking
+  * Fixes incorrect Map Select behavior on Lobbies other than Lobby at index 1
+* Fixed incorrect player password length parsing for account creation/deletion and login
+* (regression fix) Added back packet reply for account deletion request
+
 ### 0.7.0
 * Overhaul of code for future DB integration
 * NETROOM Logic (in work)

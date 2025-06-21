@@ -5,22 +5,23 @@ import struct
 from scapy.all import *
 
 
-# Canada MAC: 00:ff:e5:67:d5:da
-# Korea  MAC: 00:04:1f:82:bf:b2
+# Canada MAC: "00:ff:e5:67:d5:da"
+# Korea  MAC: "00:ff:22:cc:b2:bf"
 HOST = '211.233.10.5'
 TCP_PORT = 18000
 TCP_PORT_CHANNEL = 18001
-MY_MAC = "00:ff:22:cc:b2:bf"
+MY_MAC = "00:ff:e5:67:d5:da"
 IFACE = "OpenVPN TAP-Windows6"
 
 previous_pkt_id = 0
 pkt_cnt = 0
 tcp_sessions = {}
+#ip_to_player = {}
 allow_manual_send = False
 latest_session = None
 
 print("---------------------------------")
-print("Mystic Nights Dummy Server v0.7.0")
+print("Mystic Nights Dummy Server v0.7.1")
 print("---------------------------------")
 
 class Player:
@@ -182,7 +183,7 @@ class ChannelManager:
             ch.remove_player(player)
 
 # --- Sample Data ---
-for pid, pwd, rk in [("BABA", "ABCABC", 0x01), ("JEREMY", "DEFDEF", 0x8d), ("DJANGO", "GHIJKL", 0x34), ("FANOUI", "ZZZZZZ", 0x0b)]:
+for pid, pwd, rk in [("BABA", "ABCABC", 0x01),("AAAA", "AAAA", 0x01), ("JEREMY", "DEFDEF", 0x8d), ("DJANGO", "GHIJKL", 0x34), ("FANOUI", "ZZZZZZ", 0x0b)]:
     PlayerManager.create_player(pid, pwd, rk)
 for cid in range(3):
     ChannelManager.get_channel(cid)
@@ -272,6 +273,15 @@ def send_packet_to_client(session, payload, tcp=None, client_data=None, note="")
 def build_account_creation_result(success=True):
     val = 1
     packet_id = 0x0bba
+    flag = b'\x01\x00\x00\x00'
+    payload = flag + struct.pack('<H', val)
+    packet_len = len(payload)
+    header = struct.pack('<HH', packet_id, packet_len)
+    return header + payload
+
+def build_account_deletion_result(success=True):
+    val = 1
+    packet_id = 0x0bb9
     flag = b'\x01\x00\x00\x00'
     payload = flag + struct.pack('<H', val)
     packet_len = len(payload)
@@ -528,10 +538,10 @@ def build_lobby_room_packet(lobby: Lobby):
     header = struct.pack('<HH', packet_id, len(payload))
     return header + payload
 
-def parse_account_create(data):
+def parse_account(data):
     packet_id, payload_len = struct.unpack('<HH', data[:4])
     username = data[4:16].decode('ascii').rstrip('\x00')
-    password = data[16:28].decode('ascii').rstrip('\x00')
+    password = data[17:29].decode('ascii').rstrip('\x00')
     return packet_id, payload_len, username, password
 
 def parse_channel_join_packet(data):
@@ -638,7 +648,7 @@ def handle_ip(pkt):
             session["join_cnt"] = 0
 
         if pkt_id == 0x07d1:  # Account create
-            pid, plen, user, pwd = parse_account_create(client_data)
+            pid, plen, user, pwd = parse_account(client_data)
             print(f"[ACCOUNT CREATE REQ] User: {user} Pass: {pwd}")
             id_exists = PlayerManager.get_player(user)
             if not id_exists:
@@ -648,6 +658,25 @@ def handle_ip(pkt):
             else:
                 response = build_account_creation_duplicate_id_error()
                 print(f"[SEND] Account already exists to {ip.src}:{tcp.sport} ← {response.hex()}")
+            if not allow_manual_send:
+                allow_manual_send = True
+                latest_session = session
+                threading.Thread(target=manual_packet_sender, daemon=True).start()
+            else:
+                latest_session = session
+
+        elif pkt_id == 0x07d2:  # Account delete
+            pid, plen, user, pwd = parse_account(client_data)
+            print(f"[ACCOUNT CREATE REQ] User: {user} Pass: {pwd}")
+            id_exists = PlayerManager.get_player(user)
+            if id_exists:
+                PlayerManager.remove_player(user)
+                response = build_account_deletion_result(success=True)
+                print(f"[SEND] Account deletion OK to {ip.src}:{tcp.sport} ← {response.hex()}")
+            else:
+                #response = build_account_delete_no_account_error()
+                response = build_account_deletion_result(success=False)
+                print(f"[SEND] No such account to {ip.src}:{tcp.sport} ← {response.hex()}")
             if not allow_manual_send:
                 allow_manual_send = True
                 latest_session = session
@@ -670,11 +699,11 @@ def handle_ip(pkt):
         elif pkt_id == 0x07d0:
             print("[DEBUG] Handling 0x07d0 LOGIN packet")
             print(f"[DEBUG] Raw client_data: {client_data.hex()}")
-            if len(client_data) >= 28:
+            if len(client_data) >= 30:
                 username = client_data[4:16].decode('ascii', errors='replace').rstrip('\x00')
                 pwd = client_data[17:28].decode('ascii', errors='replace').rstrip('\x00')
                 print(f"[DEBUG] Parsed username: '{username}' (raw: {client_data[4:16].hex()})")
-                print(f"[DEBUG] Parsed password: '{pwd}' (raw: {client_data[17:28].hex()})")
+                print(f"[DEBUG] Parsed password: '{pwd}' (raw: {client_data[17:29].hex()})")
                 player = PlayerManager.get_player(username)
                 if player:
                     print(f"[DEBUG] Player found in DB: '{player.player_id}', expected password: '{player.password}'")
@@ -683,22 +712,26 @@ def handle_ip(pkt):
                 if player and player.password == pwd:
                     print(f"[LOGIN] Login OK for player '{username}'")
                     response = build_login_packet()
+                    ###ip_to_player[ip.src] = username  #Track player_id for client IP address of current tcp session 
                 else:
-                    print(f"[LOGIN] Login failed for player '{username}'. Received password: '{pwd}'")
+                    print(f"[LOGIN] Login failed for player '{username}'. Received password: '{pwd}' != Expected password: '{player.password}")
             else:
                 print("[LOGIN] Malformed login request. Payload too short.")
-                print(f"[DEBUG] Received length: {len(client_data)} bytes, expected >= 28 bytes")
+                print(f"[DEBUG] Received length: {len(client_data)} bytes, expected >= 30 bytes")
                 
             latest_session = session
 
         elif pkt_id == 0x07d4:  # Channel join
             info = parse_channel_join_packet(client_data)
-            player = PlayerManager.get_player(info["username"])
+            player_id = info["username"]
+            player = PlayerManager.get_player(player_id)
             if player:
                 ChannelManager.player_join_channel(info["channel"], player)
                 print(f"[CHANNEL JOIN] Player {player.player_id} joined channel {info['channel']}")
+                session['player_id'] = player_id  # <-- Store player_id per session
             response = build_channel_join_ack()
             latest_session = session
+
 
         elif pkt_id == 0x07d5:  # Lobby create
             player_id, lobby_name, password = parse_lobby_create_packet(client_data)
@@ -718,7 +751,7 @@ def handle_ip(pkt):
             response = None
             latest_session = session
 
-        if pkt_id == 0x07d6:  # Lobby join
+        elif pkt_id == 0x07d6:  # Lobby join
             player_id, lobby_name = parse_lobby_join_packet(client_data)
             player = PlayerManager.get_player(player_id)
             lobby = LobbyManager.get_lobby(lobby_name)
@@ -854,14 +887,20 @@ def handle_ip(pkt):
             if len(client_data) >= 8:
                 desired_map = struct.unpack('<I', client_data[4:8])[0]
                 print(f"[MAP SELECT] Client requested map index: {desired_map}")
-                for l in LobbyManager.lobbies.values():
-                    l.map = desired_map
-                    ack_packet = build_map_select_ack()
-                    send_packet_to_client(session, ack_packet, tcp=tcp, client_data=client_data)
-                    room_packet = build_lobby_room_packet(l)
-                    send_packet_to_client(session, room_packet, tcp=tcp, client_data=client_data)
-                    break
+                #player_id = ip_to_player.get(ip.src) #get player_id from IP addr
+                player_id = session.get('player_id')
+                if player_id:
+                    lobby = LobbyManager.get_lobby_by_player(player_id)
+                    if lobby:
+                        lobby.map = desired_map
+                        ack_packet = build_map_select_ack()
+                        send_packet_to_client(session, ack_packet, tcp=tcp, client_data=client_data)
+                        room_packet = build_lobby_room_packet(lobby)
+                        send_packet_to_client(session, room_packet, tcp=tcp, client_data=client_data)
+                else:
+                    print("[ERROR] Map select received, but no player_id bound to session")
             latest_session = session
+
         
         else: #Unhandled packet_id
             handled = False
