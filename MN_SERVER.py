@@ -21,7 +21,7 @@ allow_manual_send = False
 latest_session = None
 
 print("---------------------------------")
-print("Mystic Nights Dummy Server v0.7.1")
+print("Mystic Nights Dummy Server v0.7.2")
 print("---------------------------------")
 
 class Player:
@@ -270,19 +270,23 @@ def send_packet_to_client(session, payload, tcp=None, client_data=None, note="")
         msg += f" {note}"
     print(f"{msg} To {session['ip']}:{session['dport']} ← {payload.hex()}")
 
-def build_account_creation_result(success=True):
-    val = 1
+def build_account_creation_result(success=True, val=1):
     packet_id = 0x0bba
-    flag = b'\x01\x00\x00\x00'
-    payload = flag + struct.pack('<H', val)
+    if success:
+        flag = b'\x01\x00\x00\x00'
+    else:
+        flag = b'\x00'
+    payload = flag + struct.pack('<H', val) 
     packet_len = len(payload)
     header = struct.pack('<HH', packet_id, packet_len)
     return header + payload
 
-def build_account_deletion_result(success=True):
-    val = 1
+def build_account_deletion_result(success=True, val=1):
     packet_id = 0x0bb9
-    flag = b'\x01\x00\x00\x00'
+    if success:
+        flag = b'\x01\x00\x00\x00'
+    else:
+        flag = b'\x00'
     payload = flag + struct.pack('<H', val)
     packet_len = len(payload)
     header = struct.pack('<HH', packet_id, packet_len)
@@ -337,19 +341,12 @@ def build_lobby_join_ack_2(lobby_idx):
     header = struct.pack('<HH', packet_id, packet_len)
     return header + payload
 
-def build_account_creation_duplicate_id_error():
-    val = 1
-    packet_id = 0x0bb9
-    flag = b'\x01\x00\x00\x00'
-    payload = flag + struct.pack('<H', val)
-    packet_len = len(payload)
-    header = struct.pack('<HH', packet_id, packet_len)
-    return header + payload
-
-def build_login_packet():
-    val = 1
+def build_login_packet(success=True, val=1):
     packet_id = 0x0bb8
-    flag = b'\x01\x00\x00\x00'
+    if success:
+        flag = b'\x01\x00\x00\x00'
+    else:
+        flag = b'\x00'
     payload = flag + struct.pack('<H', val)
     packet_len = len(payload)
     header = struct.pack('<HH', packet_id, packet_len)
@@ -650,13 +647,13 @@ def handle_ip(pkt):
         if pkt_id == 0x07d1:  # Account create
             pid, plen, user, pwd = parse_account(client_data)
             print(f"[ACCOUNT CREATE REQ] User: {user} Pass: {pwd}")
-            id_exists = PlayerManager.get_player(user)
-            if not id_exists:
+            player = PlayerManager.get_player(user)
+            if not player:
                 PlayerManager.create_player(user, pwd)
                 response = build_account_creation_result(success=True)
                 print(f"[SEND] Account creation OK to {ip.src}:{tcp.sport} ← {response.hex()}")
-            else:
-                response = build_account_creation_duplicate_id_error()
+            else: #ID already exists
+                response = build_account_creation_result(success=False, val=9) 
                 print(f"[SEND] Account already exists to {ip.src}:{tcp.sport} ← {response.hex()}")
             if not allow_manual_send:
                 allow_manual_send = True
@@ -668,14 +665,19 @@ def handle_ip(pkt):
         elif pkt_id == 0x07d2:  # Account delete
             pid, plen, user, pwd = parse_account(client_data)
             print(f"[ACCOUNT CREATE REQ] User: {user} Pass: {pwd}")
-            id_exists = PlayerManager.get_player(user)
-            if id_exists:
-                PlayerManager.remove_player(user)
-                response = build_account_deletion_result(success=True)
-                print(f"[SEND] Account deletion OK to {ip.src}:{tcp.sport} ← {response.hex()}")
+            player = PlayerManager.get_player(user)
+            if player:
+                if player.password == pwd:
+                    PlayerManager.remove_player(user)
+                    response = build_account_deletion_result(success=True)
+                    print(f"[SEND] Account deletion OK to {ip.src}:{tcp.sport} ← {response.hex()}")
+                else:
+                    #Incorrect Password ERROR
+                    response = build_account_deletion_result(success=False, val=7)
+                    print(f"[SEND] Account deletion OK to {ip.src}:{tcp.sport} ← {response.hex()}")                 
             else:
-                #response = build_account_delete_no_account_error()
-                response = build_account_deletion_result(success=False)
+                #No such User ID ERROR
+                response = build_account_deletion_result(success=False, val=8)
                 print(f"[SEND] No such account to {ip.src}:{tcp.sport} ← {response.hex()}")
             if not allow_manual_send:
                 allow_manual_send = True
@@ -707,14 +709,16 @@ def handle_ip(pkt):
                 player = PlayerManager.get_player(username)
                 if player:
                     print(f"[DEBUG] Player found in DB: '{player.player_id}', expected password: '{player.password}'")
+                    if player.password == pwd:
+                        print(f"[LOGIN] Login OK for player '{username}'")
+                        response = build_login_packet(success=True)
+                        ###ip_to_player[ip.src] = username  #Track player_id for client IP address of current tcp session 
+                    else:
+                        print(f"[LOGIN] Login failed for player '{username}'. Received password: '{pwd}' != Expected password: '{player.password}")
+                        response = build_login_packet(success=False, val=7)
                 else:
                     print(f"[DEBUG] Player '{username}' not found in DB")
-                if player and player.password == pwd:
-                    print(f"[LOGIN] Login OK for player '{username}'")
-                    response = build_login_packet()
-                    ###ip_to_player[ip.src] = username  #Track player_id for client IP address of current tcp session 
-                else:
-                    print(f"[LOGIN] Login failed for player '{username}'. Received password: '{pwd}' != Expected password: '{player.password}")
+                    response = build_login_packet(success=False, val=8)
             else:
                 print("[LOGIN] Malformed login request. Payload too short.")
                 print(f"[DEBUG] Received length: {len(client_data)} bytes, expected >= 30 bytes")

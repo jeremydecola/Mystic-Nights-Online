@@ -18,6 +18,9 @@ TBD
 TBD
 
 ## *PROGRESS*
+### 0.7.2
+* Implemented error handling for Account Creation/Deletion and Login
+
 ### 0.7.1
 * Added session player_id tracking
   * Fixes incorrect Map Select behavior on Lobbies other than Lobby at index 1
