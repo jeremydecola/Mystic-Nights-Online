@@ -21,7 +21,7 @@ allow_manual_send = False
 latest_session = None
 
 print("---------------------------------")
-print("Mystic Nights Dummy Server v0.7.2")
+print("Mystic Nights Dummy Server v0.7.3")
 print("---------------------------------")
 
 class Player:
@@ -317,10 +317,13 @@ def build_channel_join_ack():
     header = struct.pack('<HH', packet_id, packet_len)
     return header + payload
 
-def build_lobby_create_ack(lobby_idx):
+def build_lobby_create_ack(success=True, val=1):
     packet_id = 0x0bbd
-    flag = b'\x01\x00\x00\x00'
-    payload = flag + struct.pack('<H', lobby_idx)
+    if success:
+        flag = b'\x01\x00\x00\x00'
+    else:
+        flag = b'\x00'
+    payload = flag + struct.pack('<H', val)
     packet_len = len(payload)
     header = struct.pack('<HH', packet_id, packet_len)
     return header + payload
@@ -736,24 +739,28 @@ def handle_ip(pkt):
             response = build_channel_join_ack()
             latest_session = session
 
-
         elif pkt_id == 0x07d5:  # Lobby create
             player_id, lobby_name, password = parse_lobby_create_packet(client_data)
             player = PlayerManager.get_player(player_id)
-            lobby = LobbyManager.create_lobby(lobby_name, password)
-            #get lobby index for ack packet
-            lobby_list = list(LobbyManager.lobbies.values())
-            lobby_idx = lobby_list.index(lobby)
-            if player and lobby and player not in lobby.players:
-                lobby.add_player(player, status=0)
-                print(f"[LOBBY CREATE] '{lobby_name}' created by '{player_id}', password={password}")
-            response = build_lobby_create_ack(lobby_idx)
-            send_packet_to_client(session, response, tcp=tcp, client_data=client_data)
+            lobby = LobbyManager.get_lobby(lobby_name)
             if lobby:
-                room_packet = build_lobby_room_packet(lobby)
-                send_packet_to_client(session, room_packet, tcp=tcp, client_data=client_data)
-            response = None
-            latest_session = session
+                # Lobby with this name already exists ERROR
+                response = build_lobby_create_ack(success=False, val=0x10)
+            else:
+                lobby = LobbyManager.create_lobby(lobby_name, password)
+                #get lobby index for ack packet
+                #lobby_list = list(LobbyManager.lobbies.values())
+                #lobby_idx = lobby_list.index(lobby)
+                if player and lobby and player not in lobby.players:
+                    lobby.add_player(player, status=0)
+                    print(f"[LOBBY CREATE] '{lobby_name}' created by '{player_id}', password={password}")
+                response = build_lobby_create_ack(success=True)
+                send_packet_to_client(session, response, tcp=tcp, client_data=client_data)
+                if lobby:
+                    room_packet = build_lobby_room_packet(lobby)
+                    send_packet_to_client(session, room_packet, tcp=tcp, client_data=client_data)
+                response = None
+                latest_session = session
 
         elif pkt_id == 0x07d6:  # Lobby join
             player_id, lobby_name = parse_lobby_join_packet(client_data)

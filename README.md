@@ -18,6 +18,9 @@ TBD
 TBD
 
 ## *PROGRESS*
+### 0.7.3
+* Implemented error handling for duplicate Lobby name
+
 ### 0.7.2
 * Implemented error handling for Account Creation/Deletion and Login
 
