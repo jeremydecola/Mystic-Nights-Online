@@ -22,9 +22,7 @@ TBD
 * Started DB integration
   * Servers, Channels, Lobbies, Players tables created.
   * Server List, Account Creation, Account Deletion, Login, Channel List, Channel Join, Lobby List working
-  * To be done: 
-    * Lobby Join, Lobby Creation, Lobby Leave, Lobby Kick, Map Select, Character Select, Player Count accross all entities, Passing lobby owner to next player vs. deleting lobby, Channel Error handling, Lobby Error handling, Login Error handling
-  
+  * To be done: Lobby Join, Lobby Creation, Lobby Leave, Lobby Kick, Map Select, Character Select, Player Count accross all entities, Passing lobby owner to next player vs. deleting lobby, Channel Error handling, Lobby Error handling, Login Error handling
 ### 0.7.3
 * Implemented error handling for duplicate Lobby name
 
