@@ -18,6 +18,13 @@ TBD
 TBD
 
 ## *PROGRESS*
+### 0.8.1
+* Continued DB integration
+  * Servers, Channels, Lobbies, Players tables, Lobby Join, Lobby Creation, Lobby Leave created.
+  * Server List, Account Creation, Account Deletion, Login, Channel List, Channel Join, Lobby List, Lobby Kick, Map Select, Character Select working
+  * To be done: 
+    *Player Count accross all entities, Passing lobby owner to next player vs. deleting lobby, Channel Error handling, Lobby Error handling, Login Error handling
+
 ### 0.8.0
 * Started DB integration
   * Servers, Channels, Lobbies, Players tables created.
