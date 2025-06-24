@@ -18,6 +18,14 @@ TBD
 TBD
 
 ## *PROGRESS*
+### 0.8.3
+* Migrated from Scapy-based raw packet handling to threaded TCP socket server
+  * NOT WORKING YET!
+  * Replaced Scapy sniffing/packet injection with standard Python socket server implementation
+  * Implemented threaded client handling for simultaneous connections
+  * Improved session management and code structure for maintainability
+  * Prepares server for production-like multiplayer support and real-world PS2 network compatibility
+  
 ### 0.8.2
 * Removed all reliance on local in favor of DB lookups
 * Refactoring of code done. Classes now reflect DB schema. Removed redundant functions. 
