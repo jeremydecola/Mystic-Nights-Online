@@ -839,7 +839,7 @@ def build_lobby_room_packet(lobby_name, channel_db_id):
 
 def parse_account(data):
     packet_id, payload_len = struct.unpack('<HH', data[:4])
-    username = data[4:16].decode('ascii').rstrip('\x00')
+    username = data[4:12].decode('ascii').rstrip('\x00')
     password = data[17:29].decode('ascii').rstrip('\x00')
     return packet_id, payload_len, username, password
 
@@ -855,13 +855,13 @@ def parse_channel_join_packet(data):
     }
 
 def parse_lobby_create_packet(data):
-    player_id = data[4:8].decode('ascii').rstrip('\x00')
+    player_id = data[4:12].decode('ascii').rstrip('\x00')
     lobby_name = data[17:29].decode('ascii').rstrip('\x00')
     password = data[34:42].decode('ascii').rstrip('\x00')
     return player_id, lobby_name, password
 
 def parse_lobby_join_packet(data):
-    player_id = data[4:8].decode('ascii').rstrip('\x00')
+    player_id = data[4:12].decode('ascii').rstrip('\x00')
     lobby_name = data[24:36].decode('ascii').rstrip('\x00')
     return player_id, lobby_name
 
@@ -1112,7 +1112,7 @@ def handle_client_packet(session, data):
     # --- Game Start Request ---
     elif pkt_id == 0x07d8:
         if len(data) >= 8:
-            player_id = data[4:8].decode('ascii').rstrip('\x00')
+            player_id = data[4:12].decode('ascii').rstrip('\x00')
             server_id = session.get('server_id')
             channel_index = session.get('channel_index')
             channel_db_id = ChannelManager.get_channel_db_id(server_id, channel_index)
@@ -1132,7 +1132,7 @@ def handle_client_packet(session, data):
     # --- Game Ready Request ---
     elif pkt_id == 0x07d9:
         if len(data) >= 8:
-            player_id = data[4:8].decode('ascii').rstrip('\x00')
+            player_id = data[4:12].decode('ascii').rstrip('\x00')
             server_id = session.get('server_id')
             channel_index = session.get('channel_index')
             channel_db_id = ChannelManager.get_channel_db_id(server_id, channel_index)
@@ -1157,7 +1157,7 @@ def handle_client_packet(session, data):
     # --- Lobby Leave ---
     elif pkt_id == 0x07da:  # Lobby leave
         if len(data) >= 8:
-            player_id = data[4:8].decode('ascii').rstrip('\x00')
+            player_id = data[4:12].decode('ascii').rstrip('\x00')
             server_id = session.get('server_id')
             channel_index = session.get('channel_index')
             channel_db_id = ChannelManager.get_channel_db_id(server_id, channel_index)
@@ -1182,7 +1182,7 @@ def handle_client_packet(session, data):
     # --- Lobby Kick ---
     elif pkt_id == 0x07db:
         if len(data) >= 8:
-            kick_idx = struct.unpack('<I', data[4:8])[0]
+            kick_idx = struct.unpack('<I', data[4:12])[0]
             server_id = session.get('server_id')
             channel_index = session.get('channel_index')
             channel_db_id = ChannelManager.get_channel_db_id(server_id, channel_index)
@@ -1216,7 +1216,7 @@ def handle_client_packet(session, data):
     # --- Character Info Request ---
     elif pkt_id == 0x07dc:
         if len(data) >= 8:
-            requested_id = data[4:8].decode('ascii').rstrip('\x00')
+            requested_id = data[4:12].decode('ascii').rstrip('\x00')
             print(f"[0x7dc] Requested player info for: {requested_id}")
             server_id = session.get('server_id')
             channel_index = session.get('channel_index')
@@ -1262,7 +1262,7 @@ def handle_client_packet(session, data):
     # --- Map Select Request ---
     elif pkt_id == 0x07de:  # Map select
         if len(data) >= 8:
-            desired_map = struct.unpack('<I', data[4:8])[0]
+            desired_map = struct.unpack('<I', data[4:12])[0]
             player_id = session.get('player_id')
             server_id = session.get('server_id')
             channel_index = session.get('channel_index')
