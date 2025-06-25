@@ -20,7 +20,7 @@ TBD
 ## *PROGRESS*
 ### 0.8.3
 * Migrated from Scapy-based raw packet handling to threaded TCP socket server
-  * NOT WORKING YET!
+  * TCP socket implementation REQUIRES firewall modification to allow TCP on ports 18000 and 18001 - adding powershell script
   * Replaced Scapy sniffing/packet injection with standard Python socket server implementation
   * Implemented threaded client handling for simultaneous connections
   * Improved session management and code structure for maintainability
