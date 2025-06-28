@@ -1,0 +1,84 @@
+1800 is the 2 byte packet length. byte 20 denotes UP/DOWN position change when it is a3 we are moving up , when it is 5c we are moving down, when it is 00 we have release the associated up/down button (we stopped moving). byte 19 denotes LEFT/RIGHT position change. when it is a3, we are moving left, when it is 5c we are moving right and when it is 00 we have release the associated left/right button (we stopped moving). 
+given this packet for example: 881318007ffba1c3ac9cc3c3d80fc9bfd80fc93f100000a300000000
+
+8813 is the packet ID in little endian, follow by 1800 which is 2 bytes little endian hex payload length, followed by 7ffba1c3 (probably x position float), followed by ac9cc3c3 (probably y position float), followed by d80fc9bfd (this is definitely the player heading) , followed by 80fc93f (this is definitely the camera heading), followed by 4 bytes UNKNOWN ? 1000 which contains some positional data for sure and perhaps other data also,  followed by 00 which is the LEFT/RIGHT movement, followed by a3 which is the actual UP/DOWN movement direction, followed by 00000000 which i am not sure about. Ive also added an extra experiment at the bottom.
+
+MOVE UP:
+[RECV] From ('211.233.10.22', 3658): 881318007ffba1c3ac9cc3c3d80fc9bfd80fc93f100000a300000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800e5a1a0c3ac9cc3c3d80fc9bfd80fc93f1000000000000000 (pkt_id=1388, 24 bytes)
+
+MOVE DOWN:
+[RECV] From ('211.233.10.22', 3658): 88131800e5a1a0c3ac9cc3c3d80fc9bfd80fc93f1000005c00000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800229fa6c3aceac3c3d80fc93fd80fc93f1000000000000000 (pkt_id=1388, 24 bytes)
+
+MOVE LEFT:
+[RECV] From ('211.233.10.22', 3658): 881318009c95a1c3ac9cc3c3d80fc9bfd80fc93f1000a30000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 881318004688a1c3dcb0bbc3d80f49c0d80fc93f1000000000000000 (pkt_id=1388, 24 bytes)
+
+MOVE RIGHT:
+[RECV] From ('211.233.10.22', 3658): 881318004688a1c3dcb0bbc3d80f49c0d80fc93f10005c0000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800463aa1c3f9a1c9c300000000d80fc93f1000000000000000 (pkt_id=1388, 24 bytes)
+
+
+MOVE RIGHT into a WALL (not actually changing map position)
+[RECV] From ('211.233.10.22', 3658): 88131800463aa1c3f9a1c9c300000000d80fc93f10005c0000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800463aa1c3f9a1c9c300000000d80fc93f1000000000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800463aa1c3f9a1c9c300000000d80fc93f10005c0000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800463aa1c3f9a1c9c300000000d80fc93f1000000000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800463aa1c3f9a1c9c300000000d80fc93f10005c0000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800463aa1c3f9a1c9c300000000d80fc93f1000000000000000 (pkt_id=1388, 24 bytes)
+
+MOVE LEFT from that position to the left wall located a few steps to the left (changing map position) then continue to walk left into the wall (not actually changing position)
+[RECV] From ('211.233.10.22', 3658): 88131800463aa1c3f9a1c9c300000000d80fc93f1000a30000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 881318004688a1c3dcb0bbc3d80f4940d80fc93f1000000000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 881318004688a1c3dcb0bbc3d80f4940d80fc93f1000a30000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 881318004688a1c3dcb0bbc3d80f4940d80fc93f1000000000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 881318004688a1c3dcb0bbc3d80f4940d80fc93f1000a30000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 881318004688a1c3dcb0bbc3d80f4940d80fc93f1000000000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 881318004688a1c3dcb0bbc3d80f4940d80fc93f1000a30000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 881318004688a1c3dcb0bbc3d80f4940d80fc93f1000000000000000 (pkt_id=1388, 24 bytes)
+
+MOVE RIGHT from that position returning to the right wall located a few steps to the right (changing map position) then continue to walk right into the wall (not actually changing position)
+[RECV] From ('211.233.10.22', 3658): 881318004688a1c3dcb0bbc3d80f4940d80fc93f10005c0000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800463aa1c3f9a1c9c300000000d80fc93f1000000000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800463aa1c3f9a1c9c300000000d80fc93f10005c0000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800463aa1c3f9a1c9c300000000d80fc93f1000000000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800463aa1c3f9a1c9c300000000d80fc93f10005c0000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800463aa1c3f9a1c9c300000000d80fc93f1000000000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800463aa1c3f9a1c9c300000000d80fc93f10005c0000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800463aa1c3f9a1c9c300000000d80fc93f1000000000000000 (pkt_id=1388, 24 bytes)
+
+MOVE DOWN from that position going to the south wall located a few steps down (changing map position) then continue to walk down into the wall (not actually changing position)
+[RECV] From ('211.233.10.22', 3658): 88131800463aa1c3f9a1c9c300000000d80fc93f1000005c00000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800229fa6c3f9a1c9c3d80fc93fd80fc93f1000000000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800229fa6c3f9a1c9c3d80fc93fd80fc93f1000005c00000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800229fa6c3f9a1c9c3d80fc93fd80fc93f1000000000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800229fa6c3f9a1c9c3d80fc93fd80fc93f1000005c00000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800229fa6c3f9a1c9c3d80fc93fd80fc93f1000000000000000 (pkt_id=1388, 24 bytes)
+
+From here, walk to the LEFT briefly, release, repeat inching closer and closer to the wall, allowing the game to constantly update position and then finally walk into the wall a few times. 
+[RECV] From ('211.233.10.22', 3658): 88131800229fa6c3f9a1c9c3d80fc93fd80fc93f1000a30000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800229fa6c3765fc9c3c0b83240d80fc93f1000000000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800229fa6c3765fc9c3c0b83240d80fc93f1000a30000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800229fa6c3bd6fc7c3d80f4940d80fc93f1000000000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800229fa6c3bd6fc7c3d80f4940d80fc93f1000a30000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800229fa6c356c9c5c3d80f4940d80fc93f1000000000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800229fa6c356c9c5c3d80f4940d80fc93f1000a30000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800229fa6c322d6c3c3d80f4940d80fc93f1000000000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800229fa6c322d6c3c3d80f4940d80fc93f1000a30000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800229fa6c3eee2c1c3d80f4940d80fc93f1000000000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800229fa6c3eee2c1c3d80f4940d80fc93f1000a30000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800229fa6c3eda2bfc3d80f4940d80fc93f1000000000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800229fa6c3eda2bfc3d80f4940d80fc93f1000a30000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800229fa6c31f16bdc3d80f4940d80fc93f1000000000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800229fa6c31f16bdc3d80f4940d80fc93f1000a30000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800229fa6c3dcb0bbc3d80f4940d80fc93f1000000000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800229fa6c3dcb0bbc3d80f4940d80fc93f1000a30000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 88131800229fa6c3dcb0bbc3d80f4940d80fc93f1000000000000000 (pkt_id=1388, 24 bytes)
+
+
+[RECV] From ('211.233.10.22', 3658): 8813 1800 7ffba1c3 ac9cc3c3 (-pi/2, this is the player model heading/rotation/facing) d80fc9bf (pi/2, this is the camera heading of that player) d80fc93f 1000a30000000000 (pkt_id=1388, 24 bytes)
+[RECV] From ('211.233.10.22', 3658): 8813 1800 7ffba1c3 ac9cc3c3 (xxxxx, this is the player model heading/rotation/facing ) 348d27c0 (pi/2, this is the camera heading of that player) d80fc93f 1000000000000000 (pkt_id=1388, 24 bytes)-
+
+#lets check out 0x1397
+971308000100000001000000

@@ -18,6 +18,16 @@ TBD
 TBD
 
 ## *PROGRESS*
+### 0.9.0
+* Started implementing gameplay packet handling
+  * We are now able to reach the actual game world.
+    * Solved an issue where the screen would stay black and only the UI overlay would load. (Modified 0xbc0 packet reply)
+  * Added ability to exclude the sender's session from a packet broadcast.
+  * Broadcasting all received 0x13XX packets directly back to all other players.
+  * Now Broadcasting Game Start to all players. (this fixes non-leader players not transitioning from lobby to game)
+  * Discovered logic for reply to 0x3f0. Each player sends a Ready Ack. When all Acks are received, we send packets to perform a coutdown. 
+  * ENEMY DEATH, PLAYER DEATH, ENEMY KILL COUNT logic has still not been discovered. A lot of error handling left to do. RANDOM map select is now hardcoded. Need to add randomization.
+  
 ### 0.8.3
 * Migrated from Scapy-based raw packet handling to threaded TCP socket server
   * TCP socket implementation REQUIRES firewall modification to allow TCP on ports 18000 and 18001 - adding powershell script

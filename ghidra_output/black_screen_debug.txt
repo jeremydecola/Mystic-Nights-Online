@@ -1,0 +1,6 @@
+0x39BB1C
+
+In summary:
+FUN_00159af0 → FUN_001530f0 → FUN_001533b0 → FUN_001610c0
+
+This is how the map is loaded, with FUN_001530f0 handling high-level scene setup and calling the dispatcher FUN_001533b0 when it's time to load the actual map.

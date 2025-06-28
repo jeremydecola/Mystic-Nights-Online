@@ -1,277 +1,552 @@
+import socket
 import threading
-import time
-import subprocess
 import struct
-from scapy.all import *
+import psycopg2
+import os
+import time
 
+# ========== NETWORKING AND SERVER ==========
 
-# Canada MAC: "00:ff:e5:67:d5:da"
-# Korea  MAC: "00:ff:22:cc:b2:bf"
-HOST = '211.233.10.5'
+HOST = '211.233.10.5'  # Listen on all, or use your real public/local IP
 TCP_PORT = 18000
-TCP_PORT_CHANNEL = 18001
-MY_MAC = "00:ff:e5:67:d5:da"
-IFACE = "OpenVPN TAP-Windows6"
+SERVER = '211.233.10.5' 
+SERVER_PORT = 18001
+CLIENT_GAMEPLAY_PORT = 3658
 
-previous_pkt_id = 0
-pkt_cnt = 0
-tcp_sessions = {}
-#ip_to_player = {}
-allow_manual_send = False
-latest_session = None
+# Global registry for sessions
+sessions = {}
+sessions_lock = threading.Lock()
+lobby_ready_counts = {}
+lobby_ready_lock = threading.Lock()
 
-print("---------------------------------")
-print("Mystic Nights Dummy Server v0.7.3")
-print("---------------------------------")
+# POSTGRES DATABASE CONNECTION
+DB_CONN = None
+
+def get_db_conn():
+    global DB_CONN
+    if DB_CONN is None:
+        DB_CONN = psycopg2.connect(
+            host=os.environ.get("PG_HOST"),
+            dbname=os.environ.get("PG_DBNAME"),
+            user=os.environ.get("PG_USER"),
+            password=os.environ.get("PG_PASSWORD")
+        )
+    return DB_CONN
+
+print("-----------------------------------")
+print("Mystic Nights Private Server v0.8.3")
+print("-----------------------------------")
+
+class Server:
+    def __init__(self, id, name, ip_address, player_count=0, availability=0):
+        self.id = id
+        self.name = name
+        self.ip_address = ip_address
+        self.player_count = player_count
+        self.availability = availability
+
+    @classmethod
+    def from_row(cls, row):
+        return cls(*row)
+
+class ServerManager:
+
+    @classmethod
+    def get_server_by_ip(cls, ip_address):
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, name, ip_address, player_count, availability FROM servers WHERE ip_address = %s", (ip_address,))
+            row = cur.fetchone()
+            return Server.from_row(row) if row else None
+
+    @classmethod
+    def get_server_id_by_ip(cls, ip_address):
+        server = cls.get_server_by_ip(ip_address)
+        return server.id if server else None
+
+    @classmethod
+    def get_servers(cls):
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, name, ip_address, player_count, availability FROM servers;")
+            return [Server.from_row(row) for row in cur.fetchall()]
+
+    @classmethod
+    def print_server_table(cls):
+        servers = cls.get_servers()
+        print("-" * 60)
+        print("{:<4} {:<16} {:<20} {:<10}".format("Idx", "Name", "IP (String)", "Status"))
+        print("-" * 60)
+        status_map = {-1: "알수없음", 0: "적음", 1: "보통", 2: "많음"}
+        for idx, s in enumerate(servers):
+            status_str = status_map.get(s.availability, str(s.availability))
+            print("{:<4} {:<16} {:<20} {:<10}".format(idx, s.name, s.ip_address, status_str))
+        print("-" * 60)
+
 
 class Player:
-    def __init__(self, player_id, password, rank=0x01):
+    def __init__(self, id, player_id, password, rank=1, created_at=None):
+        self.id = id
         self.player_id = player_id
         self.password = password
         self.rank = rank
-        self.channel = None
-        self.lobby = None
-        self.character = 0
-        self.status = 0
-
-class Lobby:
-    def __init__(self, name, room_id, password="", max_players=4):
-        self.name = name
-        self.room_id = room_id
-        self.password = password
-        self.max_players = max_players
-        self.current_players = 0
-        self.players = []
-        self.map = 1
-        self.leader = None
-        self.status = 1  # 1 = waiting, set to 2 when match in progress
-
-    def add_player(self, player: 'Player', status=0):
-        if player in self.players:
-            print(f"[WARN] Player {player.player_id} already in lobby {self.name}")
-            return
-        if self.current_players >= self.max_players:
-            print(f"[WARN] Lobby {self.name} is full")
-            return
-        # Assign next available character index
-        taken = set(p.character for p in self.players if p.character)
-        for i in range(1, 9):
-            if i not in taken:
-                player.character = i
-                break
-        else:
-            player.character = 1  # fallback, shouldn't happen in 4p lobby
-        player.lobby = self.name
-        player.status = status
-        self.players.append(player)
-        self.current_players += 1
-        if not self.leader:
-            self.leader = player.player_id
-
-    def remove_player(self, player_id):
-        for p in self.players:
-            if p.player_id == player_id:
-                self.players.remove(p)
-                self.current_players -= 1
-                # Free up character index
-                p.character = 0
-                p.lobby = None
-                if self.leader == p.player_id and self.players:
-                    self.leader = self.players[0].player_id
-                elif not self.players:
-                    self.leader = None
-                return
-
-    def get_player(self, player_id):
-        for p in self.players:
-            if p.player_id == player_id:
-                return p
-        return None
-
-    def kick_player_by_index(self, idx):
-        if 0 <= idx < len(self.players):
-            kicked = self.players.pop(idx)
-            kicked.lobby = None
-            kicked.character = 0  # Free up character index
-            self.current_players -= 1
-            if self.leader == kicked.player_id and self.players:
-                self.leader = self.players[0].player_id
-            elif not self.players:
-                self.leader = None
-
-class Channel:
-    def __init__(self, channel_id):
-        self.channel_id = channel_id
-        self.players = []
-
-    def add_player(self, player: Player):
-        if player not in self.players:
-            self.players.append(player)
-            player.channel = self.channel_id
-
-    def remove_player(self, player: Player):
-        if player in self.players:
-            self.players.remove(player)
-            player.channel = None
-
-class PlayerManager:
-    players = {}
+        self.created_at = created_at
 
     @classmethod
-    def get_player(cls, player_id):
-        return cls.players.get(player_id)
+    def from_row(cls, row):
+        return cls(*row)
+
+class Channel:
+    def __init__(self, id, server_id, channel_index, player_count=0):
+        self.id = id
+        self.server_id = server_id
+        self.channel_index = channel_index
+        self.player_count = player_count
+
+    @classmethod
+    def from_row(cls, row):
+        return cls(*row)
+
+class Lobby:
+    def __init__(
+        self, id, channel_id, idx_in_channel, name, password, player_count=0, status=1, map=1, leader=None,
+        player1_id=None, player1_character=None, player1_status=None,
+        player2_id=None, player2_character=None, player2_status=None,
+        player3_id=None, player3_character=None, player3_status=None,
+        player4_id=None, player4_character=None, player4_status=None
+    ):
+        self.id = id
+        self.channel_id = channel_id
+        self.idx_in_channel = idx_in_channel
+        self.name = name
+        self.password = password
+        self.player_count = player_count
+        self.status = status
+        self.map = map
+        self.leader = leader
+        self.player_ids = [player1_id, player2_id, player3_id, player4_id]
+        self.player_characters = [player1_character, player2_character, player3_character, player4_character]
+        self.player_statuses = [player1_status, player2_status, player3_status, player4_status]
+
+    @classmethod
+    def from_row(cls, row):
+        # row: (id, channel_id, idx_in_channel, name, password, player_count, status, map, leader, 
+        # player1_id, player1_character, player1_status, ... player4_id, player4_character, player4_status)
+        return cls(
+            id=row[0],
+            channel_id=row[1],
+            idx_in_channel=row[2],
+            name=row[3],
+            password=row[4],
+            player_count=row[5],
+            status=row[6],
+            map=row[7],
+            leader=row[8],
+            player1_id=row[9], player1_character=row[10], player1_status=row[11],
+            player2_id=row[12], player2_character=row[13], player2_status=row[14],
+            player3_id=row[15], player3_character=row[16], player3_status=row[17],
+            player4_id=row[18], player4_character=row[19], player4_status=row[20]
+        )
+    
+    @classmethod
+    def as_short_tuple(self):
+        """Used for lobby list: returns (idx_in_channel, player_count, name, password, status)"""
+        return (self.idx_in_channel, self.player_count, self.name, self.password, self.status)
+
+class PlayerManager:
+
+    @classmethod
+    def load_player_from_db(cls, player_id):
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, player_id, password, rank FROM players WHERE player_id = %s", (player_id,))
+            row = cur.fetchone()
+            if row:
+                return Player(*row)
+        return None
 
     @classmethod
     def create_player(cls, player_id, password, rank=0x01):
-        p = Player(player_id, password, rank)
-        cls.players[player_id] = p
-        return p
+        conn = get_db_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO players (player_id, password, rank) VALUES (%s, %s, %s)",
+                    (player_id, password, rank)
+                )
+                conn.commit()
+        except psycopg2.errors.UniqueViolation:
+            conn.rollback()
+            return None
+        return Player(player_id, password, rank)
 
     @classmethod
     def remove_player(cls, player_id):
-        if player_id in cls.players:
-            del cls.players[player_id]
+        conn = get_db_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM players WHERE player_id = %s", (player_id,))
+                conn.commit()
+            return True
+        except Exception as e:
+            conn.rollback()
+            print(f"[ERROR] General DB error during player deletion: {e}")
+            return False
+
+class ChannelManager:
+    @classmethod
+    def get_channel_db_id(cls, server_id, channel_index):
+        """Returns the primary key (id) in channels table for a given server_id and channel_index."""
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM channels WHERE server_id = %s AND channel_index = %s",
+                (server_id, channel_index)
+            )
+            row = cur.fetchone()
+            return row[0] if row else None
+
+    @classmethod
+    def get_channels_for_server(cls, server_id):
+        """Return a list of Channel objects for this server_id."""
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, server_id, channel_index, player_count FROM channels WHERE server_id = %s;", (server_id,))
+            return [Channel.from_row(row) for row in cur.fetchall()]
+
+    @classmethod
+    def get_channel(cls, server_id, channel_index):
+        """Return Channel object for a given server_id and channel_index."""
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, server_id, channel_index, player_count FROM channels WHERE server_id = %s AND channel_index = %s;",
+                        (server_id, channel_index))
+            row = cur.fetchone()
+            return Channel.from_row(row) if row else None
+
+    @classmethod
+    def print_channel_table(cls, server_id=None):
+        """Prints all channels, or just those for a given server_id."""
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            if server_id is None:
+                cur.execute("SELECT id, server_id, channel_index, player_count FROM channels;")
+            else:
+                cur.execute("SELECT id, server_id, channel_index, player_count FROM channels WHERE server_id = %s;", (server_id,))
+            rows = cur.fetchall()
+        print("-" * 50)
+        print("{:<8} {:<8} {:<8} {:<12}".format("SrvID", "ChIdx", "ID", "Players"))
+        print("-" * 50)
+        for row in sorted(rows, key=lambda c: (c[1], c[2])):  # Sort by server_id, channel_index
+            _, srv_id, ch_idx, pc = row
+            print("{:<8} {:<8} {:<8} {:<12}".format(srv_id, ch_idx, row[0], pc))
+        print("-" * 50)
+
+    @classmethod
+    def increment_player_count(cls, server_id, channel_index):
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE channels SET player_count = player_count + 1 "
+                "WHERE server_id = %s AND channel_index = %s;",
+                (server_id, channel_index)
+            )
+            conn.commit()
+
+    @classmethod
+    def decrement_player_count(cls, server_id, channel_index):
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE channels SET player_count = GREATEST(player_count - 1, 0) "
+                "WHERE server_id = %s AND channel_index = %s;",
+                (server_id, channel_index)
+            )
+            conn.commit()
 
 class LobbyManager:
-    lobbies = {}
-    next_room_id = 0
+    @classmethod
+    def get_lobbies_for_channel(cls, channel_db_id):
+        """Returns list of Lobby objects for given channel DB id."""
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, channel_id, idx_in_channel, name, password, player_count, status, map, leader,
+                       player1_id, player1_character, player1_status,
+                       player2_id, player2_character, player2_status,
+                       player3_id, player3_character, player3_status,
+                       player4_id, player4_character, player4_status
+                FROM lobbies
+                WHERE channel_id = %s
+                ORDER BY idx_in_channel ASC
+            """, (channel_db_id,))
+            return [Lobby.from_row(row) for row in cur.fetchall()]
 
     @classmethod
-    def create_lobby(cls, name, password):
-        if name in cls.lobbies:
-            return cls.lobbies[name]
-        lobby = Lobby(name, cls.next_room_id, password)
-        cls.lobbies[name] = lobby
-        cls.next_room_id += 1
-        return lobby
+    def get_lobby_by_name(cls, lobby_name, channel_db_id):
+        """Return Lobby object matching name+channel."""
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, channel_id, idx_in_channel, name, password, player_count, status, map, leader,
+                       player1_id, player1_character, player1_status,
+                       player2_id, player2_character, player2_status,
+                       player3_id, player3_character, player3_status,
+                       player4_id, player4_character, player4_status
+                FROM lobbies
+                WHERE name = %s AND channel_id = %s
+            """, (lobby_name, channel_db_id))
+            row = cur.fetchone()
+            return Lobby.from_row(row) if row else None
 
     @classmethod
-    def get_lobby(cls, name):
-        return cls.lobbies.get(name)
+    def set_player_character(cls, channel_db_id, player_id, character):
+        """Set the character field for the specified player in their lobby."""
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT id, player1_id, player2_id, player3_id, player4_id
+                   FROM lobbies WHERE channel_id = %s""",
+                (channel_db_id,)
+            )
+            for row in cur.fetchall():
+                lobby_id = row[0]
+                for idx, pid in enumerate(row[1:5], 1):
+                    if pid == player_id:
+                        cur.execute(
+                            f"""UPDATE lobbies
+                                SET player{idx}_character=%s
+                                WHERE id=%s""",
+                            (character, lobby_id)
+                        )
+                        conn.commit()
+                        return True
+        return False
 
     @classmethod
-    def get_lobby_by_player(cls, player_id):
-        for l in cls.lobbies.values():
-            for p in l.players:
-                if p.player_id == player_id:
-                    return l
+    def set_lobby_map(cls, channel_db_id, lobby_name, map_id):
+        """Set the selected map for the lobby."""
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE lobbies SET map=%s WHERE channel_id=%s AND name=%s",
+                (map_id, channel_db_id, lobby_name)
+            )
+            conn.commit()
+
+    @classmethod
+    def get_lobby_name_for_player(cls, channel_db_id, player_id):
+        """Return the lobby name in this channel that contains the player, or None."""
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT name FROM lobbies
+                   WHERE channel_id=%s AND
+                         (player1_id=%s OR player2_id=%s OR player3_id=%s OR player4_id=%s)""",
+                (channel_db_id, player_id, player_id, player_id, player_id)
+            )
+            row = cur.fetchone()
+            return row[0] if row else None
+
+    @classmethod
+    def create_lobby_db(cls, lobby_name, password, channel_db_id, player_id):
+        """Creates a lobby in the database, returns True if successful, False if full or exists."""
+        # Check if lobby already exists in channel
+        rows = cls.get_lobbies_for_channel(channel_db_id)
+        for lobby in rows:
+            if lobby.name == lobby_name:
+                print(f"[ERROR] Lobby '{lobby_name}' already exists in channel {channel_db_id}")
+                return False
+        # Find next available idx_in_channel
+        used_indices = {lobby.idx_in_channel for lobby in rows}
+        for idx_in_channel in range(20):
+            if idx_in_channel not in used_indices:
+                break
+        else:
+            print(f"[ERROR] No more lobby slots available in channel {channel_db_id}")
+            return False
+
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO lobbies
+                   (channel_id, idx_in_channel, name, password, status, player1_id, player1_character, player1_status, player_count, leader, map)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1, %s, 1)
+                """,
+                (channel_db_id, idx_in_channel, lobby_name, password, 1, player_id, 1, 0, player_id)
+            )
+            conn.commit()
+        print(f"[DB] Created lobby '{lobby_name}' in channel {channel_db_id} idx {idx_in_channel}")
+        return True
+
+    @classmethod
+    def add_player_to_lobby_db(cls, lobby_name, channel_db_id, player_id):
+        """
+        Add player to lobby (DB), assign lowest available character 1-8, status=0.
+        Returns True if success, False if lobby full or not found.
+        """
+        lobby = cls.get_lobby_by_name(lobby_name, channel_db_id)
+        if not lobby:
+            print(f"[ERROR] Lobby '{lobby_name}' not found in DB for add_player.")
+            return False
+        conn = get_db_conn()
+        player_slots = lobby.player_ids
+        characters_taken = set(filter(None, lobby.player_characters))
+        char_choices = {1,2,3,4,5,6,7,8} - characters_taken
+        assigned_character = min(char_choices) if char_choices else 1
+        assigned_status = 0  # "preparing"
+        with conn.cursor() as cur:
+            for idx, slot in enumerate(player_slots, 1):
+                if slot is None:
+                    cur.execute(f"""
+                        UPDATE lobbies
+                        SET player{idx}_id = %s,
+                            player{idx}_character = %s,
+                            player{idx}_status = %s,
+                            player_count = player_count + 1
+                        WHERE id = %s
+                    """, (player_id, assigned_character, assigned_status, lobby.id))
+                    conn.commit()
+                    print(f"[DB] Added player {player_id} to lobby '{lobby_name}' (slot {idx}, char {assigned_character}).")
+                    return True
+        print(f"[WARN] No empty player slot in lobby '{lobby_name}'")
+        return False
+
+    @classmethod
+    def remove_player_from_lobby_db(cls, player_id, channel_db_id=None):
+        """
+        Remove player from first lobby (in channel if specified) where they are present.
+        Returns True if removed, False otherwise.
+        """
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            if channel_db_id is not None:
+                cur.execute("""
+                    SELECT id, idx_in_channel, player1_id, player2_id, player3_id, player4_id
+                    FROM lobbies
+                    WHERE channel_id = %s AND (player1_id = %s OR player2_id = %s OR player3_id = %s OR player4_id = %s)
+                """, (channel_db_id, player_id, player_id, player_id, player_id))
+            else:
+                cur.execute("""
+                    SELECT id, idx_in_channel, player1_id, player2_id, player3_id, player4_id
+                    FROM lobbies
+                    WHERE player1_id = %s OR player2_id = %s OR player3_id = %s OR player4_id = %s
+                """, (player_id, player_id, player_id, player_id))
+            row = cur.fetchone()
+            if not row:
+                print(f"[WARN] Player {player_id} not found in any lobby for removal.")
+                return False
+            lobby_id, idx_in_channel, p1, p2, p3, p4 = row
+            for idx, slot in enumerate([p1, p2, p3, p4], 1):
+                if slot == player_id:
+                    cur.execute(f"""
+                        UPDATE lobbies
+                        SET player{idx}_id = NULL,
+                            player{idx}_character = NULL,
+                            player{idx}_status = NULL,
+                            player_count = GREATEST(player_count - 1, 0)
+                        WHERE id = %s
+                    """, (lobby_id,))
+                    conn.commit()
+                    print(f"[DB] Removed player {player_id} from lobby (idx {idx_in_channel}).")
+                    return True
+        return False
+
+    @classmethod
+    def is_player_in_lobby_db(cls, lobby_name, channel_db_id, player_id):
+        """Return True if the player is in the named lobby in this channel."""
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT player1_id, player2_id, player3_id, player4_id
+                FROM lobbies
+                WHERE name = %s AND channel_id = %s
+            """, (lobby_name, channel_db_id))
+            row = cur.fetchone()
+            if not row:
+                return False
+            return player_id in row
+
+    @classmethod
+    def toggle_player_ready_in_lobby(cls, channel_db_id, lobby_name, player_id):
+        """
+        Toggle the ready status of the player in the lobby in the DB,
+        returns new status (0 or 1), or None if not found.
+        """
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT player1_id, player2_id, player3_id, player4_id,
+                          player1_status, player2_status, player3_status, player4_status
+                   FROM lobbies WHERE name = %s AND channel_id = %s""",
+                (lobby_name, channel_db_id)
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            ids = row[:4]
+            statuses = row[4:8]
+            for idx, pid in enumerate(ids):
+                if pid == player_id:
+                    new_status = 0 if (statuses[idx] or 0) == 1 else 1
+                    cur.execute(
+                        f"UPDATE lobbies SET player{idx+1}_status = %s WHERE name = %s AND channel_id = %s",
+                        (new_status, lobby_name, channel_db_id)
+                    )
+                    conn.commit()
+                    return new_status
         return None
 
     @classmethod
-    def remove_player_from_all_lobbies(cls, player_id):
-        for l in cls.lobbies.values():
-            l.remove_player(player_id)
-
-class ChannelManager:
-    channels = {}
-
-    @classmethod
-    def get_channel(cls, channel_id):
-        if channel_id not in cls.channels:
-            cls.channels[channel_id] = Channel(channel_id)
-        return cls.channels[channel_id]
+    def set_lobby_status(cls, channel_db_id, lobby_name, status):
+        """Set the lobby's status field in the DB (1=waiting, 2=started)."""
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE lobbies SET status=%s WHERE name=%s AND channel_id=%s",
+                (status, lobby_name, channel_db_id)
+            )
+            conn.commit()
 
     @classmethod
-    def player_join_channel(cls, channel_id, player: Player):
-        ch = cls.get_channel(channel_id)
-        ch.add_player(player)
+    def print_lobby_table(cls, channel_id=None):
+        """Prints a formatted table of all lobbies for the given channel_id (or all channels if None), using live DB data."""
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            if channel_id is not None:
+                cur.execute("""
+                    SELECT id, channel_id, idx_in_channel, name, password, player_count, status, map, leader,
+                           player1_id, player1_character, player1_status,
+                           player2_id, player2_character, player2_status,
+                           player3_id, player3_character, player3_status,
+                           player4_id, player4_character, player4_status
+                    FROM lobbies
+                    WHERE channel_id = %s
+                    ORDER BY idx_in_channel ASC
+                """, (channel_id,))
+            else:
+                cur.execute("""
+                    SELECT id, channel_id, idx_in_channel, name, password, player_count, status, map, leader,
+                           player1_id, player1_character, player1_status,
+                           player2_id, player2_character, player2_status,
+                           player3_id, player3_character, player3_status,
+                           player4_id, player4_character, player4_status
+                    FROM lobbies
+                    ORDER BY channel_id ASC, idx_in_channel ASC
+                """)
+            lobbies = [Lobby.from_row(row) for row in cur.fetchall()]
 
-    @classmethod
-    def player_leave_channel(cls, player: Player):
-        if player.channel is not None and player.channel in cls.channels:
-            ch = cls.channels[player.channel]
-            ch.remove_player(player)
+        # Print table header
+        print("ChID  Idx  Name            Players  Type     Status")
+        print("=" * 60)
+        status_map = {0: '〈비어있음〉', 1: '대기중', 2: '시작됨'}
+        for lobby in lobbies:
+            is_private = bool(lobby.password)
+            type_txt = "Private" if is_private else "Public"
+            print(f"{lobby.channel_id:<5} {lobby.idx_in_channel:<4} {lobby.name[:12]:12} {lobby.player_count:<7} {type_txt:7} {status_map.get(lobby.status, lobby.status):6}")
+        print("=" * 60)
 
-# --- Sample Data ---
-for pid, pwd, rk in [("BABA", "ABCABC", 0x01),("AAAA", "AAAA", 0x01), ("JEREMY", "DEFDEF", 0x8d), ("DJANGO", "GHIJKL", 0x34), ("FANOUI", "ZZZZZZ", 0x0b)]:
-    PlayerManager.create_player(pid, pwd, rk)
-for cid in range(3):
-    ChannelManager.get_channel(cid)
-ChannelManager.player_join_channel(0, PlayerManager.get_player("JEREMY"))
-ChannelManager.player_join_channel(0, PlayerManager.get_player("DJANGO"))
-ChannelManager.player_join_channel(0, PlayerManager.get_player("FANOUI"))
-l1 = LobbyManager.create_lobby("TestRoom1", "")
-l1.add_player(PlayerManager.get_player("JEREMY"), status=1)
-l1.add_player(PlayerManager.get_player("DJANGO"), status=1)
-l1.add_player(PlayerManager.get_player("FANOUI"), status=1)
-l2 = LobbyManager.create_lobby("TestRoom2", "PW123")
-l3 = LobbyManager.create_lobby("TestRoom3", "CC999")
-
-def print_server_table():
-    print("-" * 60)
-    print("{:<4} {:<16} {:<20} {:<10}".format("Idx", "Name", "IP (String)", "Status"))
-    print("-" * 60)
-    servers = [
-        {"name": "MN0", "ip_str": "211.233.10.5", "avail": 0},
-        {"name": "MN1", "ip_str": "211.233.10.6", "avail": 1},
-        {"name": "MN2", "ip_str": "211.233.10.7", "avail": 2},
-    ]
-    status_map = {-1: "알수없음", 0: "적음", 1: "보통", 2: "많음"}
-    for idx, s in enumerate(servers):
-        status_str = status_map.get(s.get('avail', -1), str(s.get('avail', -1)))
-        print("{:<4} {:<16} {:<20} {:<10}".format(idx, s['name'], s['ip_str'], status_str))
-    print("-" * 60)
-
-def print_channel_table():
-    print("-" * 40)
-    print("{:<6} {:<12} {:<10}".format("Idx", "CurPlayers", "MaxPlayers"))
-    print("-" * 40)
-    for cid in range(12):
-        ch = ChannelManager.get_channel(cid)
-        print("{:<6} {:<12} {:<10}".format(cid, len(ch.players), 80))
-    print("-" * 40)
-
-def print_lobby_table():
-    print("Idx  Name           Status   Type    Players")
-    print("="*60)
-    status_map = {0: '〈비어있음〉', 1: '대기중', 2: '시작됨'}
-    for i, l in enumerate(LobbyManager.lobbies.values()):
-        status_text = status_map.get(l.status)
-        is_private = bool(l.password)
-        type_text = "Private" if is_private else "Public"
-        players = ','.join(p.player_id for p in l.players)
-        print(f"{i:2}   {l.name[:12]:12}   {status_text:6}  {type_text:7} {players}")
-
-def manual_packet_sender():
-    global latest_session
-    print("[INFO] Manual packet sending ENABLED. Type hex bytes (e.g. 0bc700...):")
-    while True:
-        pkt_hex = input("[SEND HEX]> ").strip()
-        if not pkt_hex:
-            continue
-        try:
-            pkt_bytes = bytes.fromhex(pkt_hex)
-        except Exception as e:
-            print(f"Invalid hex: {e}")
-            continue
-        if latest_session:
-            send_packet_to_client(latest_session, pkt_bytes, note="[MANUAL SEND]")
-        else:
-            print("[ERROR] No session to send to.")
-
-def send_packet_to_client(session, payload, tcp=None, client_data=None, note=""):
-    ether = Ether(dst=session["mac"], src=MY_MAC)
-    ip_layer = IP(src=HOST, dst=session["ip"])
-
-    # If we have the last received TCP/Raw, set seq/ack exactly as in the legacy code
-    if tcp is not None and client_data is not None:
-        seq = session["seq"] + 1
-        ack = tcp.seq + len(client_data)
-        tcp_layer = TCP(sport=tcp.dport, dport=tcp.sport, flags="PA", seq=seq, ack=ack)
-        # Update the session state for next time
-        session["seq"] += len(payload)
-        session["ack"] = ack
-    else:
-        # fallback to just incrementing, NOT recommended unless for manual/incomplete sending
-        tcp_layer = TCP(sport=session["sport"], dport=session["dport"], flags="PA", seq=session["seq"] + 1, ack=session["ack"])
-        session["seq"] += len(payload)
-        # session["ack"] should probably not change in this branch
-
-    sendp(ether/ip_layer/tcp_layer/Raw(load=payload), iface=IFACE, verbose=False)
-    msg = "[SEND]"
-    if note:
-        msg += f" {note}"
-    print(f"{msg} To {session['ip']}:{session['dport']} ← {payload.hex()}")
+### END OF CLASS DEFINITIONS ###
 
 def build_account_creation_result(success=True, val=1):
     packet_id = 0x0bba
@@ -295,25 +570,34 @@ def build_account_deletion_result(success=True, val=1):
     header = struct.pack('<HH', packet_id, packet_len)
     return header + payload
 
-def build_channel_list_packet():
-    print_channel_table()
-    packet_id = 0xbbb
-    flag = 1
-    unknown = b'\x00\x00\x00'
-    channels = []
-    for cid in range(12):
-        ch = ChannelManager.get_channel(cid)
-        cur = len(ch.players)
-        maxp = 80
-        channels.append(struct.pack('<III', cid, cur, maxp))
-    entries = b''.join(channels)
-    payload = struct.pack('<B3s', flag, unknown) + entries
+def build_channel_list_packet(server_id):
+    packet_id = 0x0bbb
+    flag = b'\x01\x00\x00\x00'
+    entries = []
+
+    # Get all channels for this server from DB
+    channels = {ch.channel_index: ch for ch in ChannelManager.get_channels_for_server(server_id)}
+    for ch_idx in range(12):
+        ch = channels.get(ch_idx)
+        if ch:
+            cid = ch.channel_index
+            cur_players = ch.player_count
+        else:
+            cid = ch_idx
+            cur_players = 0
+        max_players = 80
+        entries.append(struct.pack('<III', cid, cur_players, max_players))
+    payload = flag + b''.join(entries)
     header = struct.pack('<HH', packet_id, len(payload))
+    ChannelManager.print_channel_table(server_id)
     return header + payload
 
-def build_channel_join_ack():
-    val = 1
+def build_channel_join_ack(success=True, val=1):
     packet_id = 0x0bbc
+    if success:
+        flag = b'\x01\x00\x00\x00'
+    else:
+        flag = b'\x00'
     flag = b'\x01\x00\x00\x00'
     payload = flag + struct.pack('<H', val)
     packet_len = len(payload)
@@ -331,18 +615,26 @@ def build_lobby_create_ack(success=True, val=1):
     header = struct.pack('<HH', packet_id, packet_len)
     return header + payload
 
-def build_lobby_join_ack(lobby_idx):
+# where val = lobby idx_in_channel if success
+def build_lobby_join_ack(success=True, val=1):
     packet_id = 0x0bbe
-    flag = b'\x01\x00\x00\x00'
-    payload = flag + struct.pack('<H', lobby_idx)
+    if success:
+        flag = b'\x01\x00\x00\x00'
+    else:
+        flag = b'\x00'
+    payload = flag + struct.pack('<H', val)
     packet_len = len(payload)
     header = struct.pack('<HH', packet_id, packet_len)
     return header + payload
 
-def build_lobby_join_ack_2(lobby_idx):
+# where val = lobby idx_in_channel if success
+def build_lobby_join_ack_2(success=True, val=1):
     packet_id = 0x0bbf
-    flag = b'\x01\x00\x00\x00'
-    payload = flag + struct.pack('<H', lobby_idx)
+    if success:
+        flag = b'\x01\x00\x00\x00'
+    else:
+        flag = b'\x00'
+    payload = flag + struct.pack('<H', val)
     packet_len = len(payload)
     header = struct.pack('<HH', packet_id, packet_len)
     return header + payload
@@ -358,70 +650,60 @@ def build_login_packet(success=True, val=1):
     header = struct.pack('<HH', packet_id, packet_len)
     return header + payload
 
-def build_lobby_list_packet():
-    """
-    Builds a multiplayer lobby list packet for transmission.
-    Entry layout (44 bytes):
-        0x00: uint32 room_id
-        0x04: uint32 cur_players
-        0x08: uint32 max_players
-        0x0C: char[16] name (EUC-KR, padded with \x00) [Client only accepts 12 char entries]
-        0x1C: uint8 pad1 (b'\x00')
-        0x1D: char[12] password (EUC-KR, padded with \x00) [Client only accepts 8 char entries]l
-                # NOTE: If password is empty, lobby is PUBLIC
-                #       If password is non-empty, lobby is PRIVATE
-        0x29: uint8 pad2 (b'\x00')
-        0x2A: uint8 status (0=〈비어있음〉, 1=대기중, 2=시작됨)
-        0x2B: uint8 pad3 (b'\x00')
-    Note: name and password must only contain upper case letters and numbers
-    """
-    print_lobby_table()
+def build_lobby_list_packet(server_id, channel_index):
     packet_id = 0xbc8
     flag = b'\x01\x00\x00\x00'
     entry_struct = '<III16s1s12s1sB1s'
     lobbies = []
-    for l in LobbyManager.lobbies.values():
-        name = l.name.encode('euc-kr')[:16].ljust(16, b'\x00')
+
+    channel_db_id = ChannelManager.get_channel_db_id(server_id, channel_index)
+    rows = []
+    if channel_db_id is not None:
+        rows = LobbyManager.get_lobbies_for_channel(channel_db_id)
+
+    for lobby in rows:
+        idx_in_channel = lobby.idx_in_channel
+        player_count = lobby.player_count
+        name = lobby.name
+        password = lobby.password
+        status = lobby.status
+        max_players = 4
+        name_enc = name.encode('euc-kr', errors='replace')[:16].ljust(16, b'\x00')
         pad1 = b'\x00'
-        password = l.password.encode('euc-kr')[:12].ljust(12, b'\x00')
+        pw_enc = (password or '').encode('euc-kr', errors='replace')[:12].ljust(12, b'\x00')
         pad2 = b'\x00'
-        status = l.status
         pad3 = b'\x00'
-        packed = struct.pack(entry_struct, l.room_id, l.current_players, l.max_players, name, pad1, password, pad2, status, pad3)
+        packed = struct.pack(entry_struct, idx_in_channel, player_count, max_players, name_enc, pad1, pw_enc, pad2, status, pad3)
         lobbies.append(packed)
+
+    # Pad to 20 entries if needed
     while len(lobbies) < 20:
-        idx = len(lobbies) + 1
-        name = f"Lobby{idx}".encode('euc-kr')[:16].ljust(16, b'\x00')
+        idx = len(lobbies)
+        name = f"Lobby{idx+1}".encode('euc-kr')[:16].ljust(16, b'\x00')
         pad1 = b'\x00'
-        password = b"".ljust(12, b'\x00')
+        pw_enc = b"".ljust(12, b'\x00')
         pad2 = b'\x00'
-        status = 0 # For unused/empty lobby slots
+        status = 0
         pad3 = b'\x00'
-        packed = struct.pack(entry_struct, idx, 0, 4, name, pad1, password, pad2, status, pad3)
+        packed = struct.pack(entry_struct, idx, 0, 4, name, pad1, pw_enc, pad2, status, pad3)
         lobbies.append(packed)
-    entries = b''.join(lobbies)
-    payload = flag + entries
+
+    payload = flag + b''.join(lobbies)
     header = struct.pack('<HH', packet_id, len(payload))
+    LobbyManager.print_lobby_table(channel_db_id)
     return header + payload
 
 def build_server_list_packet():
-    print_server_table()
     packet_id = 0x0bc7
-    flag = 1
-    unknown = b'\x00\x00\x00'
-    custom_servers = [
-        {"name": "MN0", "ip_str": "211.233.10.5", "avail": 0},
-        {"name": "MN1", "ip_str": "211.233.10.6", "avail": 1},
-        {"name": "MN2", "ip_str": "211.233.10.7", "avail": 2},
-    ]
+    flag = b'\x01\x00\x00\x00'
     servers = []
-    for entry in custom_servers:
-        name = entry['name'].encode('euc-kr').ljust(16, b'\x00')
-        ip = entry['ip_str'].encode('ascii') + b'\x00'
+    for server in ServerManager.get_servers():
+        name = server.name.encode('euc-kr').ljust(16, b'\x00')
+        ip = server.ip_address.encode('ascii') + b'\x00'
         ip = ip.ljust(16, b'\x00')
         reserved1 = b'\x00' * 5
         reserved2 = b'\x00' * 3
-        servers.append(struct.pack('<16s5s16s3si', name, reserved1, ip, reserved2, entry['avail']))
+        servers.append(struct.pack('<16s5s16s3si', name, reserved1, ip, reserved2, server.availability))
     while len(servers) < 10:
         idx = len(servers)
         name = f"MN{idx}".encode('euc-kr').ljust(16, b'\x00')
@@ -430,8 +712,9 @@ def build_server_list_packet():
         reserved2 = b'\x00' * 3
         servers.append(struct.pack('<16s5s16s3si', name, reserved1, ip, reserved2, -1))
     entries = b''.join(servers)
-    payload = struct.pack('<B3s', flag, unknown) + entries
+    payload = flag + entries
     header = struct.pack('<HH', packet_id, len(payload))
+    ServerManager.print_server_table()
     return header + payload
 
 def build_map_select_ack():
@@ -484,10 +767,12 @@ def build_lobby_leave_ack():
     header = struct.pack('<HH', packet_id, len(payload))
     return header + payload
 
-def build_player_ready_ack():
+def build_player_ready_ack(success=True, val=1):
     packet_id = 0xbc1
-    flag = b'\x01\x00\x00\x00'
-    val = 1
+    if success:
+        flag = b'\x01\x00\x00\x00'
+    else:
+        flag = b'\x00'
     payload = flag + struct.pack('<H', val)
     header = struct.pack('<HH', packet_id, len(payload))
     return header + payload
@@ -495,40 +780,56 @@ def build_player_ready_ack():
 def build_game_start_ack(player_id):
     packet_id = 0xbc0
     flag = b'\x01\x00\x00\x00'
-    pid = player_id.encode('ascii')[:16].ljust(16, b'\x00')
-    param3, param4, param5 = 0, 0, 0
-    payload = flag + pid + struct.pack('<HHh', param3, param4, param5)
+    pad = b'\x00\x00'
+    #pid = player_id.encode('ascii')[:16].ljust(16, b'\x00')
+    token = b'\x08'.ljust(16, b'\x00')
+    vampire_id, param4, map_id = 0, 2, 4 #vampire_id between 0 and 3 , map_id between 1 and 4
+    payload = flag + token + struct.pack('<H', vampire_id) + pad + struct.pack('<H', param4) + pad + struct.pack('<H', map_id)
     header = struct.pack('<HH', packet_id, len(payload))
     return header + payload
 
-def build_lobby_room_packet(lobby: Lobby):
-    import struct
+def build_lobby_room_packet(lobby_name, channel_db_id):
+    lobby = LobbyManager.get_lobby_by_name(lobby_name, channel_db_id)
+    if not lobby:
+        print(f"[ERROR] Could not fetch lobby {lobby_name} for channel {channel_db_id}")
+        return b''
+
     packet_id = 0x03ee
+
+    # Determine leader index (0 if not found)
     leader_idx = 0
-    if lobby.leader:
-        for i, p in enumerate(lobby.players):
-            if p.player_id == lobby.leader:
-                leader_idx = i
-                break
+    for i, pid in enumerate(lobby.player_ids):
+        if pid == lobby.leader:
+            leader_idx = i
+            break
     lobby_leader = struct.pack("B", leader_idx)
     padding = b'\x00\x00\x00'
     name = lobby.name.encode('euc-kr', errors='replace')[:16].ljust(16, b'\x00')
     unknown1 = b'\x00' * 16
+
     player_structs = []
-    for p in (lobby.players + [Player("", "", 0)] * 4)[:4]:
-        pid = p.player_id.encode('ascii')[:8].ljust(8, b'\x00')
+    for i in range(4):
+        pid_str = lobby.player_ids[i]
+        pid = (pid_str or '').encode('ascii')[:8].ljust(8, b'\x00')
         block = bytearray(28)
         block[0:8] = pid
         block[8:13] = b'\x00' * 5
-        block[0x0D] = p.character
-        block[0x0E] = p.status
+        block[0x0D] = lobby.player_characters[i] or 0
+        block[0x0E] = lobby.player_statuses[i] or 0
         block[0x0F] = 0
-        block[0x10:0x14] = struct.pack('<I', p.rank)
+        # Look up each player's rank from the database 
+        if pid_str:
+            player = PlayerManager.load_player_from_db(pid_str)
+            player_rank = player.rank if player else 1
+        else:
+            player_rank = 1
+        block[0x10:0x14] = struct.pack('<I', player_rank)
         block[0x14:0x18] = struct.pack('<I', 0)
         block[0x18:0x1C] = struct.pack('<I', 0)
         player_structs.append(bytes(block))
-    map_select = struct.pack('<I', lobby.map)
-    lobby_status = struct.pack('<I', lobby.status) #ACTUAL EXPECTED VALUE UNKNOWN, USING LOBBY STATUS FOR NOW
+
+    map_select = struct.pack('<I', lobby.map or 1)
+    lobby_status = struct.pack('<I', lobby.status or 1)
     payload = (
         lobby_leader +
         padding +
@@ -536,410 +837,772 @@ def build_lobby_room_packet(lobby: Lobby):
         unknown1 +
         b''.join(player_structs) +
         map_select +
-        lobby_status #ACTUAL EXPECTED VALUE UNKNOWN, USING LOBBY STATUS FOR NOW
+        lobby_status
     )
     header = struct.pack('<HH', packet_id, len(payload))
     return header + payload
 
 def parse_account(data):
     packet_id, payload_len = struct.unpack('<HH', data[:4])
-    username = data[4:16].decode('ascii').rstrip('\x00')
+    username = data[4:12].decode('ascii').rstrip('\x00')
     password = data[17:29].decode('ascii').rstrip('\x00')
     return packet_id, payload_len, username, password
 
 def parse_channel_join_packet(data):
     packet_id, payload_len = struct.unpack('<HH', data[:4])
-    username = data[4:12].decode('ascii').rstrip('\x00')
-    channel = struct.unpack('<H', data[20:22])[0]
-    channel_num = channel
+    player_id = data[4:12].decode('ascii').rstrip('\x00')
+    channel_index = struct.unpack('<H', data[20:22])[0]
     return {
         "packet_id": packet_id,
         "payload_len": payload_len,
-        "username": username,
-        "channel": channel_num
+        "player_id": player_id,
+        "channel_index": channel_index
     }
 
 def parse_lobby_create_packet(data):
-    player_id = data[4:8].decode('ascii').rstrip('\x00')
+    player_id = data[4:12].decode('ascii').rstrip('\x00')
     lobby_name = data[17:29].decode('ascii').rstrip('\x00')
     password = data[34:42].decode('ascii').rstrip('\x00')
     return player_id, lobby_name, password
 
 def parse_lobby_join_packet(data):
-    player_id = data[4:8].decode('ascii').rstrip('\x00')
+    player_id = data[4:12].decode('ascii').rstrip('\x00')
     lobby_name = data[24:36].decode('ascii').rstrip('\x00')
     return player_id, lobby_name
 
-def kill_process_using_port(port):
-    print(f"Killing processes that may be using port {port}...")
+def parse_move_packet(data):
+    """
+    Parse player movement/position update (0x1388) packet.
+    Assumes 'data' includes header (4 bytes) + payload (24 bytes).
+    Returns a dict of all parsed fields.
+    """
+    if len(data) < 28:
+        raise ValueError("Packet too short for 0x1388 movement update")
+
+    pkt_id, pkt_len = struct.unpack('<HH', data[:4])
+    y_pos      = struct.unpack('<f', data[4:8])[0]
+    x_pos      = struct.unpack('<f', data[8:12])[0]
+    player_heading    = struct.unpack('<f', data[12:16])[0]
+    cam_heading= struct.unpack('<f', data[16:20])[0]
+    unknown1   = data[20:22]           # 2 bytes
+    left_right = data[22]              # 1 byte
+    up_down    = data[23]              # 1 byte
+    player_idx   = data[24:28]           # 4 bytes (character index [0,3])
+
+    return {
+        "pkt_id": pkt_id,
+        "pkt_len": pkt_len,
+        "x_pos": x_pos,
+        "y_pos": y_pos,
+        "player_heading": player_heading,
+        "cam_heading": cam_heading,
+        "unknown1": unknown1,
+        "left_right": left_right,
+        "up_down": up_down,
+        "player_idx": player_idx,
+    }
+
+def build_ready_ack(player_index):
+    """
+    Build the 0x03f4 Ready Ack packet.
+    Example: player_index 3 -> f4 03 04 00 03 00 00 00
+    """
+    packet_id = 0x03f4
+    payload_len = 4
+    payload = struct.pack('<B3x', player_index)
+    header = struct.pack('<HH', packet_id, payload_len)
+    return header + payload
+
+def build_countdown(number):
+    """
+    Build the 0x03ef Countdown packet (ef03 0100 XX).
+    Example: number=3 -> ef 03 01 00 03
+    """
+    packet_id = 0x03ef
+    payload_len = 1
+    header = struct.pack('<HH', packet_id, payload_len)
+    payload = struct.pack('<B', number)
+    return header + payload
+
+# def kill_process_using_port(port):
+#     print(f"Killing processes that may be using port {port}...")
+#     try:
+#         result = subprocess.check_output(f"netstat -ano | findstr :{port}", shell=True, text=True)
+#         for line in result.splitlines():
+#             parts = line.split()
+#             if len(parts) >= 5:
+#                 pid = parts[-1]
+#                 if int(pid) > 10:
+#                     print(f"Port {port} is being used by PID: {pid}.")
+#                     print(f"Attempting to terminate PID {pid}...")
+#                     subprocess.run(f"taskkill /F /PID {pid}", shell=True)
+#                     print(f"Successfully terminated process {pid}.")
+#     except subprocess.CalledProcessError:
+#         print(f"No process found using port {port}.")
+
+# kill_process_using_port(TCP_PORT)
+# kill_process_using_port(TCP_PORT_CHANNEL)
+
+def send_packet_to_client(session, payload, note=""):
+    """Send a TCP packet to a single client."""
     try:
-        result = subprocess.check_output(f"netstat -ano | findstr :{port}", shell=True, text=True)
-        for line in result.splitlines():
-            parts = line.split()
-            if len(parts) >= 5:
-                pid = parts[-1]
-                if int(pid) > 10:
-                    print(f"Port {port} is being used by PID: {pid}.")
-                    print(f"Attempting to terminate PID {pid}...")
-                    subprocess.run(f"taskkill /F /PID {pid}", shell=True)
-                    print(f"Successfully terminated process {pid}.")
-    except subprocess.CalledProcessError:
-        print(f"No process found using port {port}.")
+        session['socket'].sendall(payload)
+        if note:
+            print(f"[SEND] {note} To {session['addr']}: {payload.hex()}")
+        else:
+            print(f"[SEND] To {session['addr']}: {payload.hex()}")
+    except Exception as e:
+        print(f"[SEND ERROR] {session['addr']}: {e}")
 
-kill_process_using_port(TCP_PORT)
-kill_process_using_port(TCP_PORT_CHANNEL)
+def parse_packet_header(data):
+    if len(data) < 4:
+        return None, None
+    packet_id, payload_len = struct.unpack('<HH', data[:4])
+    return packet_id, payload_len
 
-def enable_manual_packet_sender():
-    global allow_manual_send
-    if not allow_manual_send:
-        allow_manual_send = True
-        print("[MANUAL PACKET SENDER ENABLED]")
-        threading.Thread(target=manual_packet_sender, daemon=True).start()
-
-def handle_arp(pkt):
-    if ARP in pkt and pkt[ARP].op == 1 and pkt[ARP].pdst == HOST:
-        print(f"[SCAPY] ARP request from {pkt[ARP].psrc}")
-        ether = Ether(dst=pkt[ARP].hwsrc, src=MY_MAC)
-        arp = ARP(op=2, psrc=HOST, pdst=pkt[ARP].psrc, hwsrc=MY_MAC, hwdst=pkt[ARP].hwsrc)
-        sendp(ether/arp, iface=IFACE, verbose=False)
-        print(f"[SCAPY] Sent ARP reply for {HOST}")
-
-def handle_ip(pkt):
-    global allow_manual_send, latest_session, previous_pkt_id, pkt_cnt
-    if not (pkt.haslayer(IP) and pkt.haslayer(TCP)):
+def broadcast_to_lobby(lobby_name, channel_db_id, payload, note="", cur_session=None, to_self=True):
+    # 1. Get the lobby object
+    lobby = LobbyManager.get_lobby_by_name(lobby_name, channel_db_id)
+    if not lobby:
+        print(f"[BROADCAST ERROR] Lobby '{lobby_name}' not found in channel {channel_db_id}")
         return
+
+    # 2. Get player_ids in lobby (filter out None)
+    player_ids = [pid for pid in lobby.player_ids if pid]
+
+    # 3. For each session, if the player_id matches, send
+    with sessions_lock:
+        for s in sessions.values():
+            if (to_self or s!=cur_session):
+                # Only send to actual gameplay server connections (port 3658)
+                # session['addr'] is a tuple: (ip, port)
+                if s.get("player_id") in player_ids and s['addr'][1] == CLIENT_GAMEPLAY_PORT:
+                    send_packet_to_client(s, payload, note=f"[BROADCAST {lobby_name}] {note}")
+
+def handle_client_packet(session, data):
+
+    # The session is now a dict: {'socket': sock, 'addr': addr, ...}
+    # Instead of raw/ether/IP/TCP, just use TCP socket: data is the full packet.
+
+    # Example minimal pattern (fill out as needed):
+    pkt_id, payload_len = parse_packet_header(data)
+    if pkt_id is None:
+        print(f"[ERROR] Packet too short from {session['addr']}")
+        return
+
+    response = None
     
-    ip = pkt[IP]
-    tcp = pkt[TCP]
-    key = (ip.src, tcp.sport)
-
-    #print(f"[DEBUG] handle_ip: {ip.src}:{tcp.sport}->{ip.dst}:{tcp.dport}, flags={tcp.flags}, seq={tcp.seq}, ack={tcp.ack}, payload={len(tcp.payload)} bytes")
-    #if Raw in pkt:
-        #print(f"[DEBUG] Raw payload: {pkt[Raw].load.hex()}")
-
-    if ip.dst == HOST and tcp.dport in (18000, 18001) and tcp.flags == "S":
-        if key in tcp_sessions:
-            return
-        print(f"[SCAPY] TCP SYN from {ip.src}:{tcp.sport} to port {tcp.dport}")
-        seq_num = 1000
-        ack_num = tcp.seq + 1
-        ether = Ether(dst=pkt[Ether].src, src=MY_MAC)
-        ip_layer = IP(src=ip.dst, dst=ip.src)
-        tcp_layer = TCP(sport=tcp.dport, dport=tcp.sport, flags="SA", seq=seq_num, ack=ack_num)
-        sendp(ether/ip_layer/tcp_layer, iface=IFACE, verbose=False)
-        tcp_sessions[key] = {
-            "seq": seq_num,
-            "ack": ack_num,
-            "mac": pkt[Ether].src,
-            "ip": ip.src,
-            "sport": tcp.dport,
-            "dport": tcp.sport,
-            "is_channel": tcp.dport == 18001
-        }
-        print(f"[SCAPY] Sent SYN-ACK to {ip.src}:{tcp.sport} on port {tcp.dport}")
-
-    elif tcp.flags == "PA" and key in tcp_sessions and Raw in pkt:
-        session = tcp_sessions[key]
-        client_data = pkt[Raw].load
-        print(f"[RECV] From {ip.src}:{tcp.sport} on port {tcp.dport} → {client_data.hex()}")
-        response = b''
-        pkt_id = struct.unpack('<H', client_data[:2])[0] if len(client_data) >= 2 else None
-
-        handled = True
-        #join_cnt used for lobby join/create packet reply count
-        if "join_cnt" not in session:
-            session["join_cnt"] = 0
-
-        if pkt_id == 0x07d1:  # Account create
-            pid, plen, user, pwd = parse_account(client_data)
-            print(f"[ACCOUNT CREATE REQ] User: {user} Pass: {pwd}")
-            player = PlayerManager.get_player(user)
-            if not player:
-                PlayerManager.create_player(user, pwd)
-                response = build_account_creation_result(success=True)
-                print(f"[SEND] Account creation OK to {ip.src}:{tcp.sport} ← {response.hex()}")
-            else: #ID already exists
-                response = build_account_creation_result(success=False, val=9) 
-                print(f"[SEND] Account already exists to {ip.src}:{tcp.sport} ← {response.hex()}")
-            if not allow_manual_send:
-                allow_manual_send = True
-                latest_session = session
-                threading.Thread(target=manual_packet_sender, daemon=True).start()
-            else:
-                latest_session = session
-
-        elif pkt_id == 0x07d2:  # Account delete
-            pid, plen, user, pwd = parse_account(client_data)
-            print(f"[ACCOUNT CREATE REQ] User: {user} Pass: {pwd}")
-            player = PlayerManager.get_player(user)
+    # --- Login ---
+    if pkt_id == 0x07d0:
+        print("[DEBUG] Handling 0x07d0 LOGIN packet")
+        print(f"[DEBUG] Raw client_data: {data.hex()}")
+        if len(data) >= 30:
+            player_id = data[4:16].decode('ascii', errors='replace').rstrip('\x00')
+            pwd = data[17:29].decode('ascii', errors='replace').rstrip('\x00')
+            print(f"[DEBUG] Parsed player_id: '{player_id}' (raw: {data[4:16].hex()})")
+            print(f"[DEBUG] Parsed password: '{pwd}' (raw: {data[17:29].hex()})")
+            player = PlayerManager.load_player_from_db(player_id)
             if player:
+                print(f"[DEBUG] Player found in DB: '{player.player_id}', expected password: '{player.password}'")
                 if player.password == pwd:
-                    PlayerManager.remove_player(user)
+                    print(f"[LOGIN] Login OK for player '{player_id}'")
+                    response = build_login_packet(success=True)
+                    # Save to session for later use
+                    session['player_id'] = player_id
+                else:
+                    print(f"[LOGIN] Login failed for player '{player_id}'. Received password: '{pwd}' != Expected password: '{player.password}'")
+                    response = build_login_packet(success=False, val=7)
+            else:
+                print(f"[LOGIN] Player '{player_id}' not found in DB")
+                response = build_login_packet(success=False, val=8)
+        else:
+            print("[LOGIN] Malformed login request. Payload too short.")
+            print(f"[DEBUG] Received length: {len(data)} bytes, expected >= 30 bytes")
+            response = build_login_packet(success=False, val=5)
+        send_packet_to_client(session, response, note="[LOGIN REPLY]")
+    
+    # --- Account Create ---
+    elif pkt_id == 0x07d1:
+        pid, plen, user, pwd = parse_account(data)
+        print(f"[ACCOUNT CREATE REQ] User: {user} Pass: {pwd}")
+        # Try to load first in case it exists
+        player = PlayerManager.load_player_from_db(user)
+        if player:
+            response = build_account_creation_result(success=False, val=9)  # ID exists
+            print("Account already exists.")
+        else:
+            PlayerManager.create_player(user, pwd)
+            response = build_account_creation_result(success=True)
+            print("Account succesfully created.")
+        send_packet_to_client(session, response, note="[ACCOUNT CREATE]")
+
+    # --- Account Delete ---
+    elif pkt_id == 0x07d2:
+        pid, plen, user, pwd = parse_account(data)
+        print(f"[ACCOUNT DELETE REQ] User: {user} Pass: {pwd}")
+        # Always check DB for player
+        player = PlayerManager.load_player_from_db(user)
+        if player:
+            if player.password == pwd:
+                result = PlayerManager.remove_player(user)
+                if not result:
+                    response = build_account_deletion_result(success=False, val=4) # Database Error
+                else:
                     response = build_account_deletion_result(success=True)
-                    print(f"[SEND] Account deletion OK to {ip.src}:{tcp.sport} ← {response.hex()}")
-                else:
-                    #Incorrect Password ERROR
-                    response = build_account_deletion_result(success=False, val=7)
-                    print(f"[SEND] Account deletion OK to {ip.src}:{tcp.sport} ← {response.hex()}")                 
+                    print("Account deletion OK.")
             else:
-                #No such User ID ERROR
-                response = build_account_deletion_result(success=False, val=8)
-                print(f"[SEND] No such account to {ip.src}:{tcp.sport} ← {response.hex()}")
-            if not allow_manual_send:
-                allow_manual_send = True
-                latest_session = session
-                threading.Thread(target=manual_packet_sender, daemon=True).start()
+                response = build_account_deletion_result(success=False, val=7)
+                print("Account deletion failed. Incorrect Password.")
+        else:
+            response = build_account_deletion_result(success=False, val=8)
+            print("Account deletion failed. No such Player ID.")
+        send_packet_to_client(session, response, note="[ACCOUNT DELETE]")
+    
+    # --- Channel List ---
+    elif pkt_id == 0x07d3:
+        # The server is now tracked in session['server'] or session['server_id']
+        server_id = session.get('server_id')
+        if not server_id:
+            print(f"[ERROR] Could not determine server for session {session['addr']}")
+            return
+        response = build_channel_list_packet(server_id)
+        send_packet_to_client(session, response, note="[CHANNEL LIST]")
+
+    # --- Channel Join ---
+    elif pkt_id == 0x07d4:
+        info = parse_channel_join_packet(data)
+        player_id = info["player_id"]
+        channel_index = info["channel_index"]
+
+        # Use server_id from session (set on connection or earlier packet)
+        server_id = session.get('server_id')
+        if server_id is None:
+            print(f"[ERROR] Channel join for unknown server_id in session {session['addr']}")
+            response = build_channel_join_ack(success=False, val=5)
+            send_packet_to_client(session, response, note="[CHANNEL JOIN FAIL]")
+            return
+
+        player = PlayerManager.load_player_from_db(player_id)
+        if player:
+            # ChannelManager.increment_player_count(server_id, channel_index)  # Uncomment if wanted
+            print(f"[CHANNEL JOIN] Player {player.player_id} joined channel {channel_index} on server_id {server_id}")
+        else:
+            print(f"[ERROR] Channel join for unknown player: {player_id}")
+
+        # Save per-session state for later packets
+        session['player_id'] = player_id
+        session['channel_index'] = channel_index
+
+        response = build_channel_join_ack(success=True)
+        send_packet_to_client(session, response, note="[CHANNEL JOIN]")
+
+    # --- Lobby Create ---
+    elif pkt_id == 0x07d5:
+        player_id, lobby_name, password = parse_lobby_create_packet(data)
+        player = PlayerManager.load_player_from_db(player_id)
+        server_id = session.get('server_id')
+        channel_index = session.get('channel_index')
+        channel_db_id = ChannelManager.get_channel_db_id(server_id, channel_index)
+        print(f"[LOBBY CREATE] Player '{player_id}' requests lobby '{lobby_name}' (channel_db_id={channel_db_id})")
+    
+        if channel_db_id is None or player is None:
+            print(f"[ERROR] Missing channel or player for lobby create. channel_db_id={channel_db_id}, player={player_id}")
+            response = build_lobby_create_ack(success=False, val=5)
+        elif not LobbyManager.create_lobby_db(lobby_name, password, channel_db_id, player_id):
+            # Already exists or full
+            lobby = LobbyManager.get_lobby_by_name(lobby_name, channel_db_id)
+            if lobby is not None:
+                print(f"[ERROR] Lobby '{lobby_name}' already exists in channel {channel_db_id}")
+                response = build_lobby_create_ack(success=False, val=0x10)  # Already exists
             else:
-                latest_session = session
-
-        elif pkt_id == 0x07df:
-            response = build_server_list_packet()
-            latest_session = session
-
-        elif pkt_id == 0x07d3:
-            response = build_channel_list_packet()
-            latest_session = session
-
-        elif pkt_id == 0x07e0:
-            response = build_lobby_list_packet()
-            latest_session = session
-
-        elif pkt_id == 0x07d0:
-            print("[DEBUG] Handling 0x07d0 LOGIN packet")
-            print(f"[DEBUG] Raw client_data: {client_data.hex()}")
-            if len(client_data) >= 30:
-                username = client_data[4:16].decode('ascii', errors='replace').rstrip('\x00')
-                pwd = client_data[17:28].decode('ascii', errors='replace').rstrip('\x00')
-                print(f"[DEBUG] Parsed username: '{username}' (raw: {client_data[4:16].hex()})")
-                print(f"[DEBUG] Parsed password: '{pwd}' (raw: {client_data[17:29].hex()})")
-                player = PlayerManager.get_player(username)
-                if player:
-                    print(f"[DEBUG] Player found in DB: '{player.player_id}', expected password: '{player.password}'")
-                    if player.password == pwd:
-                        print(f"[LOGIN] Login OK for player '{username}'")
-                        response = build_login_packet(success=True)
-                        ###ip_to_player[ip.src] = username  #Track player_id for client IP address of current tcp session 
-                    else:
-                        print(f"[LOGIN] Login failed for player '{username}'. Received password: '{pwd}' != Expected password: '{player.password}")
-                        response = build_login_packet(success=False, val=7)
-                else:
-                    print(f"[DEBUG] Player '{username}' not found in DB")
-                    response = build_login_packet(success=False, val=8)
-            else:
-                print("[LOGIN] Malformed login request. Payload too short.")
-                print(f"[DEBUG] Received length: {len(client_data)} bytes, expected >= 30 bytes")
-                
-            latest_session = session
-
-        elif pkt_id == 0x07d4:  # Channel join
-            info = parse_channel_join_packet(client_data)
-            player_id = info["username"]
-            player = PlayerManager.get_player(player_id)
-            if player:
-                ChannelManager.player_join_channel(info["channel"], player)
-                print(f"[CHANNEL JOIN] Player {player.player_id} joined channel {info['channel']}")
-                session['player_id'] = player_id  # <-- Store player_id per session
-            response = build_channel_join_ack()
-            latest_session = session
-
-        elif pkt_id == 0x07d5:  # Lobby create
-            player_id, lobby_name, password = parse_lobby_create_packet(client_data)
-            player = PlayerManager.get_player(player_id)
-            lobby = LobbyManager.get_lobby(lobby_name)
-            if lobby:
-                # Lobby with this name already exists ERROR
-                response = build_lobby_create_ack(success=False, val=0x10)
-            else:
-                lobby = LobbyManager.create_lobby(lobby_name, password)
-                #get lobby index for ack packet
-                #lobby_list = list(LobbyManager.lobbies.values())
-                #lobby_idx = lobby_list.index(lobby)
-                if player and lobby and player not in lobby.players:
-                    lobby.add_player(player, status=0)
-                    print(f"[LOBBY CREATE] '{lobby_name}' created by '{player_id}', password={password}")
-                response = build_lobby_create_ack(success=True)
-                send_packet_to_client(session, response, tcp=tcp, client_data=client_data)
-                if lobby:
-                    room_packet = build_lobby_room_packet(lobby)
-                    send_packet_to_client(session, room_packet, tcp=tcp, client_data=client_data)
-                response = None
-                latest_session = session
-
-        elif pkt_id == 0x07d6:  # Lobby join
-            player_id, lobby_name = parse_lobby_join_packet(client_data)
-            player = PlayerManager.get_player(player_id)
-            lobby = LobbyManager.get_lobby(lobby_name)
-            lobby_list = list(LobbyManager.lobbies.values())
-            lobby_idx = lobby_list.index(lobby) if lobby in lobby_list else 0
-            if player and lobby and player not in lobby.players:
-                lobby.add_player(player, status=0)
-                print(f"[LOBBY JOIN] Player {player_id} joined lobby {lobby_name}")
-
-            session["join_cnt"] += 1
-
-            # Only send lobby room info after the 3rd join packet
-            # if session["join_cnt"] == 3 and lobby:
-            #     room_packet = build_lobby_room_packet(lobby)
-            #     send_packet_to_client(session, room_packet, tcp=tcp, client_data=client_data)
-            #     session["join_cnt"] = 0  # reset for future joins
-            
-            # elif session["join_cnt"] == 2:
-            #     response = build_lobby_join_ack_2(lobby_idx)
-            #     send_packet_to_client(session, response, tcp=tcp, client_data=client_data)
-            
-            # else:
-            #     response = build_lobby_join_ack(lobby_idx)
-            #     send_packet_to_client(session, response, tcp=tcp, client_data=client_data)
-            
-            response = build_lobby_join_ack(lobby_idx)
-            send_packet_to_client(session, response, tcp=tcp, client_data=client_data)
-            if lobby:
-                room_packet = build_lobby_room_packet(lobby)
-                send_packet_to_client(session, room_packet, tcp=tcp, client_data=client_data)
-            
-            response = None
-            latest_session = session
-
-        elif pkt_id == 0x07d8:  # Game start request
-            if len(client_data) >= 8:
-                player_id = client_data[4:8].decode('ascii').rstrip('\x00')
-                print(f"[0x7d8] Game Start request by player: {player_id}")
-                bc0_response = build_game_start_ack(player_id)
-                send_packet_to_client(session, bc0_response, tcp=tcp, client_data=client_data)
-                # Set lobby status to 'in progress'
-                lobby = LobbyManager.get_lobby_by_player(player_id)
-                if lobby:
-                    lobby.status = 2
-            else:
-                print(f"[ERROR] Malformed 0x07d8 packet (len={len(client_data)})")
-            latest_session = session
-
-        elif pkt_id == 0x07d9:  # Game ready request
-            if len(client_data) >= 8:
-                player_id = client_data[4:8].decode('ascii').rstrip('\x00')
-                player = PlayerManager.get_player(player_id)
-                print(f"[0x7d9] Player Ready request by player: {player_id}")
-                bc1_response = build_player_ready_ack()
-                send_packet_to_client(session, bc1_response, tcp=tcp, client_data=client_data)
-                # Toggle player status
-                player.status = (player.status != 1) 
-                for l in LobbyManager.lobbies.values():
-                    if l.get_player(player_id):
-                        room_packet = build_lobby_room_packet(l)
-                        send_packet_to_client(session, room_packet, tcp=tcp, client_data=client_data)
-            else:
-                print(f"[ERROR] Malformed 0x07d9 packet (len={len(client_data)})")
-            latest_session = session
-
-        elif pkt_id == 0x07da:  # Lobby leave
-            if len(client_data) >= 8:
-                player_id = client_data[4:8].decode('ascii').rstrip('\x00')
-                player = PlayerManager.get_player(player_id)
-                print(f"[0x07da] Lobby leave request for player: {player_id}")
-                ack_packet = build_lobby_leave_ack()
-                send_packet_to_client(session, ack_packet, tcp=tcp, client_data=client_data)
-                lobby = LobbyManager.get_lobby_by_player(player_id)
-                if lobby:
-                    lobby.remove_player(player_id)
-                    player.status = 0
-                    print(f"[LEAVE] Removed player: {player_id} from {lobby.name}")
-            latest_session = session
-
-        elif pkt_id == 0x07db:  # Kick
-            if len(client_data) >= 8:
-                kick_idx = struct.unpack('<I', client_data[4:8])[0]
-                print(f"[0x07db] Kick request: remove player at index {kick_idx}")
-                ack_packet = build_kick_player_ack()
-                send_packet_to_client(session, ack_packet, tcp=tcp, client_data=client_data)
-                # Assume latest lobby
-                for l in LobbyManager.lobbies.values():
-                    if 0 <= kick_idx < len(l.players):
-                        player = l.players[kick_idx]
-                        kicked = player.player_id
-                        l.kick_player_by_index(kick_idx)
-                        player.status = 0
-                        print(f"[KICK] Removed player: {kicked} from {l.name}")
-                        room_packet = build_lobby_room_packet(l)
-                        send_packet_to_client(session, room_packet, tcp=tcp, client_data=client_data)
-                        break
-            latest_session = session
-
-        elif pkt_id == 0x07dc:  # Character info request
-            if len(client_data) >= 8:
-                requested_id = client_data[4:8].decode('ascii').rstrip('\x00')
-                print(f"[0x7dc] Requested player info for: {requested_id}")
-                for l in LobbyManager.lobbies.values():
-                    p = l.get_player(requested_id)
-                    if p:
-                        bc4_response = build_character_select_setup_packet(p)
-                        session["last_7dc_player_id"] = requested_id
-                        send_packet_to_client(session, bc4_response, tcp=tcp, client_data=client_data)
-                        break
-            latest_session = session
-
-        elif pkt_id == 0x07dd:  # Character select
-            if len(client_data) >= 8:
-                char_val = client_data[4]
-                requested_id = session.get("last_7dc_player_id")
-                if requested_id:
-                    for l in LobbyManager.lobbies.values():
-                        p = l.get_player(requested_id)
-                        if p:
-                            print(f"[0x7dd] Updating player {requested_id} character to {char_val}")
-                            p.character = char_val
-                            break
-                ack_packet = build_character_select_ack()
-                send_packet_to_client(session, ack_packet, tcp=tcp, client_data=client_data)
-                for l in LobbyManager.lobbies.values():
-                    if requested_id and l.get_player(requested_id):
-                        room_packet = build_lobby_room_packet(l)
-                        send_packet_to_client(session, room_packet, tcp=tcp, client_data=client_data)
-                        break
-            latest_session = session
-
-        elif pkt_id == 0x07de:  # Map select
-            if len(client_data) >= 8:
-                desired_map = struct.unpack('<I', client_data[4:8])[0]
-                print(f"[MAP SELECT] Client requested map index: {desired_map}")
-                #player_id = ip_to_player.get(ip.src) #get player_id from IP addr
-                player_id = session.get('player_id')
-                if player_id:
-                    lobby = LobbyManager.get_lobby_by_player(player_id)
-                    if lobby:
-                        lobby.map = desired_map
-                        ack_packet = build_map_select_ack()
-                        send_packet_to_client(session, ack_packet, tcp=tcp, client_data=client_data)
-                        room_packet = build_lobby_room_packet(lobby)
-                        send_packet_to_client(session, room_packet, tcp=tcp, client_data=client_data)
-                else:
-                    print("[ERROR] Map select received, but no player_id bound to session")
-            latest_session = session
-
-        
-        else: #Unhandled packet_id
-            handled = False
-        
-        if not handled:
-            print(f"[WARN] Unhandled packet ID: 0x{pkt_id:04x}")
-            enable_manual_packet_sender()
-
+                print(f"[ERROR] No more lobby slots available in channel {channel_db_id}")
+                response = build_lobby_create_ack(success=False, val=0x0d)  # Full
+        else:
+            print(f"[LOBBY CREATE] Lobby '{lobby_name}' successfully created in channel {channel_db_id}")
+            response = build_lobby_create_ack(success=True)
+            send_packet_to_client(session, response, note="[LOBBY CREATE OK]")
+            room_packet = build_lobby_room_packet(lobby_name, channel_db_id)
+            send_packet_to_client(session, room_packet, note="[LOBBY ROOM INFO]")
+            response = None  # Don't send response again below
+    
         if response:
-            send_packet_to_client(session, response, tcp=tcp, client_data=client_data)
-            latest_session = session
+            send_packet_to_client(session, response, note="[LOBBY CREATE ERR]")
 
-        previous_pkt_id = pkt_id
+    # --- Lobby Join ---
+    elif pkt_id == 0x07d6:
+        player_id, lobby_name = parse_lobby_join_packet(data)
+        player = PlayerManager.load_player_from_db(player_id)
+        server_id = session.get('server_id')
+        channel_index = session.get('channel_index')
+        channel_db_id = ChannelManager.get_channel_db_id(server_id, channel_index)
 
-def packet_handler(pkt):
-    if pkt.haslayer(ARP):
-        handle_arp(pkt)
-    elif pkt.haslayer(TCP):
-        handle_ip(pkt)
+        success = False
+        val = 1  # Default (idx)
 
-def start_sniffer():
-    sniff(filter=f"arp or (tcp port {TCP_PORT} or tcp port {TCP_PORT_CHANNEL})", prn=packet_handler, iface=IFACE, store=0)
+        if channel_db_id is None or player is None:
+            print(f"[ERROR] Invalid channel or player missing. server_id={server_id}, channel_index={channel_index}, player={player_id}")
+            val = 0x05  # Invalid parameter
+            lobby = None
+        else:
+            lobby = LobbyManager.get_lobby_by_name(lobby_name, channel_db_id)
+            if not lobby:
+                print(f"[ERROR] Lobby '{lobby_name}' not found in channel {channel_db_id}")
+                val = 0x0f  # Lobby does not exist
+            else:
+                if LobbyManager.is_player_in_lobby_db(lobby_name, channel_db_id, player_id):
+                    print(f"[LOBBY JOIN] (repeat) Player {player_id} already in lobby '{lobby_name}' (idx {lobby.idx_in_channel})")
+                    success = True
+                    val = lobby.idx_in_channel
+                else:
+                    add_success = LobbyManager.add_player_to_lobby_db(lobby_name, channel_db_id, player_id)
+                    if add_success:
+                        print(f"[LOBBY JOIN] Player {player_id} joined lobby '{lobby_name}' (idx {lobby.idx_in_channel}) in channel {channel_db_id}")
+                        success = True
+                        val = lobby.idx_in_channel
+                    else:
+                        print(f"[ERROR] Lobby '{lobby_name}' is full or cannot add player {player_id}")
+                        val = 0x0a  # Lobby full
+
+        response = build_lobby_join_ack(success=success, val=val)
+        send_packet_to_client(session, response, note="[LOBBY JOIN]")
+
+        if success and channel_db_id is not None and lobby is not None:
+            room_packet = build_lobby_room_packet(lobby_name, channel_db_id)
+            broadcast_to_lobby(lobby_name, channel_db_id, room_packet, note="LOBBY ROOM UPDATE")
+            #send_packet_to_client(session, room_packet, note="[LOBBY ROOM INFO]")
+
+    # --- Game Start Request ---
+    elif pkt_id == 0x07d8:
+        if len(data) >= 8:
+            player_id = data[4:12].decode('ascii').rstrip('\x00')
+            server_id = session.get('server_id')
+            channel_index = session.get('channel_index')
+            channel_db_id = ChannelManager.get_channel_db_id(server_id, channel_index)
+            lobby_name = LobbyManager.get_lobby_name_for_player(channel_db_id, player_id)
+            print(f"[0x7d8] Game Start request by {player_id} in lobby {lobby_name}")
+            if channel_db_id is not None and lobby_name:
+                LobbyManager.set_lobby_status(channel_db_id, lobby_name, 2)  # 2 = started/in progress
+            bc0_response = build_game_start_ack(player_id)
+            broadcast_to_lobby(lobby_name, channel_db_id, bc0_response, note="[GAME START ACK]")
+            #send_packet_to_client(session, bc0_response, note="[GAME START ACK]")
+            # Optionally send updated lobby room packet:
+            room_packet = build_lobby_room_packet(lobby_name, channel_db_id)
+            #send_packet_to_client(session, room_packet, note="[LOBBY ROOM INFO]")
+            broadcast_to_lobby(lobby_name, channel_db_id, room_packet, note="LOBBY ROOM UPDATE")
+        else:
+            print(f"[ERROR] Malformed 0x07d8 packet (len={len(data)})")
+
+    # --- Game Ready Request ---
+    elif pkt_id == 0x07d9:
+        if len(data) >= 8:
+            player_id = data[4:12].decode('ascii').rstrip('\x00')
+            server_id = session.get('server_id')
+            channel_index = session.get('channel_index')
+            channel_db_id = ChannelManager.get_channel_db_id(server_id, channel_index)
+            lobby_name = LobbyManager.get_lobby_name_for_player(channel_db_id, player_id)
+            if channel_db_id is not None and lobby_name:
+                new_status = LobbyManager.toggle_player_ready_in_lobby(channel_db_id, lobby_name, player_id)
+                print(f"[0x7d9] Player Ready request by {player_id}, new status: {new_status}")
+                bc1_response = build_player_ready_ack(success=True)
+                send_packet_to_client(session, bc1_response, note="[PLAYER READY ACK]")
+                room_packet = build_lobby_room_packet(lobby_name, channel_db_id)
+                broadcast_to_lobby(lobby_name, channel_db_id, room_packet, note="LOBBY ROOM UPDATE")
+                #send_packet_to_client(session, room_packet, note="[LOBBY ROOM INFO]")
+            else:
+                print(f"[0x7d9] Player Ready failed: missing lobby or channel info.")
+                bc1_response = build_player_ready_ack(success=False, val=5)
+                send_packet_to_client(session, bc1_response, note="[PLAYER READY FAIL]")
+        else:
+            print(f"[ERROR] Malformed 0x07d9 packet (len={len(data)})")
+            bc1_response = build_player_ready_ack(success=False, val=5)
+            send_packet_to_client(session, bc1_response, note="[PLAYER READY FAIL]")
+
+    # --- Lobby Leave ---
+    elif pkt_id == 0x07da:  # Lobby leave
+        if len(data) >= 8:
+            player_id = data[4:12].decode('ascii').rstrip('\x00')
+            server_id = session.get('server_id')
+            channel_index = session.get('channel_index')
+            channel_db_id = ChannelManager.get_channel_db_id(server_id, channel_index)
+            if channel_db_id is None:
+                print(f"[ERROR] No channel DB id for server_id={server_id}, channel_index={channel_index}")
+                ack_packet = build_lobby_leave_ack()
+            elif not LobbyManager.remove_player_from_lobby_db(player_id, channel_db_id):
+                print(f"[WARN] Could not remove player {player_id} from lobby in channel {channel_db_id}")
+                ack_packet = build_lobby_leave_ack()
+            else:
+                print(f"[LEAVE] Removed player: {player_id} from channel {channel_db_id}")
+                print("Broadcasting to players who remain in that lobby.")
+                room_packet = build_lobby_room_packet(lobby_name, channel_db_id)
+                broadcast_to_lobby(lobby_name, channel_db_id, room_packet, note="LOBBY ROOM UPDATE")
+                ack_packet = build_lobby_leave_ack()
+            send_packet_to_client(session, ack_packet, note="[LOBBY LEAVE ACK]")
+        else:
+            print(f"[ERROR] Malformed 0x07da packet (len={len(data)})")
+            #ack_packet = LOGIC TO BE IMPLEMENTED
+            #send_packet_to_client(session, ack_packet, note="[LOBBY LEAVE FAIL]")
+
+    # --- Lobby Kick ---
+    elif pkt_id == 0x07db:
+        if len(data) >= 8:
+            kick_idx = struct.unpack('<I', data[4:12])[0]
+            server_id = session.get('server_id')
+            channel_index = session.get('channel_index')
+            channel_db_id = ChannelManager.get_channel_db_id(server_id, channel_index)
+            print(f"[0x07db] Kick request: remove player at index {kick_idx} (channel_db_id={channel_db_id})")
+            ack_packet = build_kick_player_ack()
+            send_packet_to_client(session, ack_packet, note="[KICK ACK]")
+            player_id = session.get('player_id')
+            lobby_name = LobbyManager.get_lobby_name_for_player(channel_db_id, player_id)
+            if lobby_name:
+                lobby = LobbyManager.get_lobby_by_name(lobby_name, channel_db_id)
+                if lobby and 0 <= kick_idx < 4:
+                    kicked_player_id = lobby.player_ids[kick_idx]
+                    if kicked_player_id:
+                        removed = LobbyManager.remove_player_from_lobby_db(kicked_player_id, channel_db_id)
+                        if removed:
+                            print(f"[KICK] Removed player: {kicked_player_id} from {lobby_name} (idx {kick_idx})")
+                        else:
+                            print(f"[KICK] Could not remove player: {kicked_player_id} from {lobby_name}")
+                    else:
+                        print(f"[KICK] No player in slot {kick_idx} of {lobby_name}")
+                else:
+                    print(f"[KICK] Invalid kick index {kick_idx} for lobby {lobby_name}")
+                room_packet = build_lobby_room_packet(lobby_name, channel_db_id)
+                broadcast_to_lobby(lobby_name, channel_db_id, room_packet, note="LOBBY ROOM UPDATE")
+                #send_packet_to_client(session, room_packet, note="[LOBBY ROOM INFO]")
+        else:
+            print(f"[ERROR] Malformed 0x07db packet (len={len(data)})")
+            #ack_packet = LOGIC TO BE IMPLEMENTED
+            #send_packet_to_client(session, ack_packet, note="[KICK FAIL]")
+
+    # --- Character Info Request ---
+    elif pkt_id == 0x07dc:
+        if len(data) >= 8:
+            requested_id = data[4:12].decode('ascii').rstrip('\x00')
+            print(f"[0x7dc] Requested player info for: {requested_id}")
+            server_id = session.get('server_id')
+            channel_index = session.get('channel_index')
+            channel_db_id = ChannelManager.get_channel_db_id(server_id, channel_index)
+            if channel_db_id is not None:
+                lobby_name = LobbyManager.get_lobby_name_for_player(channel_db_id, requested_id)
+                character, status = 0, 0
+                if lobby_name:
+                    lobby = LobbyManager.get_lobby_by_name(lobby_name, channel_db_id)
+                    if lobby and requested_id in lobby.player_ids:
+                        slot_idx = lobby.player_ids.index(requested_id)
+                        character = lobby.player_characters[slot_idx] or 0
+                        status = lobby.player_statuses[slot_idx] or 0
+                player = PlayerManager.load_player_from_db(requested_id)
+                if player:
+                    player.character = character
+                    player.status = status
+                    bc4_response = build_character_select_setup_packet(player)
+                    send_packet_to_client(session, bc4_response, note="[CHAR INFO]")
+        else:
+            print(f"[ERROR] Malformed 0x07dc packet (len={len(data)})")
+
+    # --- Character Select Request ---
+    elif pkt_id == 0x07dd:
+        if len(data) >= 8:
+            char_val = data[4]
+            requested_id = session.get('player_id')
+            server_id = session.get('server_id')
+            channel_index = session.get('channel_index')
+            channel_db_id = ChannelManager.get_channel_db_id(server_id, channel_index)
+            if requested_id and channel_db_id is not None:
+                # Update the player's character in the DB
+                LobbyManager.set_player_character(channel_db_id, requested_id, char_val)
+                ack_packet = build_character_select_ack()
+                send_packet_to_client(session, ack_packet, note="[CHAR SELECT ACK]")
+                lobby_name = LobbyManager.get_lobby_name_for_player(channel_db_id, requested_id)
+                room_packet = build_lobby_room_packet(lobby_name, channel_db_id)
+                broadcast_to_lobby(lobby_name, channel_db_id, room_packet, note="LOBBY ROOM UPDATE")
+                #send_packet_to_client(session, room_packet, note="[LOBBY ROOM INFO]")
+        else:
+            print(f"[ERROR] Malformed 0x07dd packet (len={len(data)})")
+
+    # --- Map Select Request ---
+    elif pkt_id == 0x07de:  # Map select
+        if len(data) >= 8:
+            desired_map = struct.unpack('<I', data[4:12])[0]
+            player_id = session.get('player_id')
+            server_id = session.get('server_id')
+            channel_index = session.get('channel_index')
+            channel_db_id = ChannelManager.get_channel_db_id(server_id, channel_index)
+            if player_id and channel_db_id is not None:
+                lobby_name = LobbyManager.get_lobby_name_for_player(channel_db_id, player_id)
+                if lobby_name:
+                    LobbyManager.set_lobby_map(channel_db_id, lobby_name, desired_map)
+                    ack_packet = build_map_select_ack()
+                    send_packet_to_client(session, ack_packet, note="[MAP SELECT ACK]")
+                    room_packet = build_lobby_room_packet(lobby_name, channel_db_id)
+                    broadcast_to_lobby(lobby_name, channel_db_id, room_packet, note="LOBBY ROOM UPDATE")
+                    #send_packet_to_client(session, room_packet, note="[LOBBY ROOM INFO]")
+        else:
+            print(f"[ERROR] Malformed 0x07de packet (len={len(data)})")
+
+    # --- Server List ---
+    elif pkt_id == 0x07df: 
+        response = build_server_list_packet()
+        send_packet_to_client(session, response, note="[SERVER LIST]")
+
+    # --- Lobby List ---
+    elif pkt_id == 0x07e0:
+        server_id = session.get('server_id')
+        channel_index = session.get('channel_index')  # Set on Channel Join
+        print(f"server_id is: '{server_id}', channel_index is: '{channel_index}'")
+        if server_id is not None and channel_index is not None:
+            response = build_lobby_list_packet(server_id, channel_index)
+            send_packet_to_client(session, response, note="[LOBBY LIST]")
+        else:
+            print("[ERROR] Missing server_id or channel_index in session.")
+    
+    # --- Ready Check ---
+    elif pkt_id == 0x03f0:
+        player_id = session.get('player_id')
+        server_id = session.get('server_id')
+        channel_index = session.get('channel_index')
+        channel_db_id = ChannelManager.get_channel_db_id(server_id, channel_index)
+        lobby_name = LobbyManager.get_lobby_name_for_player(channel_db_id, player_id)
+        player_index = None
+        # Find the player's index (0–3) in the lobby
+        lobby = LobbyManager.get_lobby_by_name(lobby_name, channel_db_id)
+        if lobby and player_id in lobby.player_ids:
+            player_index = lobby.player_ids.index(player_id)
+        else:
+            print("[READY] Could not find player index in lobby.")
+            return
+        response = build_ready_ack(player_index)
+        send_packet_to_client(session, response, note=f"[READY ACK]")
+
+        # --- GLOBAL READY COUNT TRACKING ---
+        with lobby_ready_lock:
+            key = (channel_db_id, lobby_name)
+            cnt = lobby_ready_counts.get(key, 0) + 1
+            lobby_ready_counts[key] = cnt
+            #print(f"Players Ready in '{lobby_name}': {cnt}/{lobby.player_count}")
+            print(f"Players Ready in '{lobby_name}': {cnt}/2")
+            #if cnt == lobby.player_count:  # All ready!
+            if cnt == 2:  # All ready!
+                # Broadcast countdown to all players in this lobby
+                for x in range(1, 5):
+                    countdown_packet = build_countdown(x)
+                    broadcast_to_lobby(lobby_name, channel_db_id, countdown_packet, note=f"[COUNTDOWN {x}]")
+                    time.sleep(1)  # Optional: for visible countdown effect
+                broadcast_to_lobby(lobby_name, channel_db_id, build_countdown(0), note="[COUNTDOWN GO]")
+                lobby_ready_counts[key] = 0  # Reset for next game
+
+# --- Gameplay Loop ---
+
+    # --- Player Movement ---
+    elif pkt_id == 0x1388:
+        try:
+            parsed = parse_move_packet(data)
+            # Store state for session if you wanta
+            session['y'] = parsed['y_pos']
+            session['x'] = parsed['x_pos']
+            session['player_heading'] = parsed['player_heading']
+            session['cam_heading'] = parsed['cam_heading']
+            session['move_lr'] = parsed['left_right']
+            session['move_ud'] = parsed['up_down']
+            session['move_unknown1'] = parsed['unknown1']
+            session['player_idx'] = parsed['player_idx']
+
+            # Figure out lobby as before
+            player_id = session.get('player_id')
+            server_id = session.get('server_id')
+            channel_index = session.get('channel_index')
+            channel_db_id = ChannelManager.get_channel_db_id(server_id, channel_index)
+            lobby_name = None
+            if channel_db_id is not None and player_id:
+                lobby_name = LobbyManager.get_lobby_name_for_player(channel_db_id, player_id)
+
+            print(f"[1388] Movement from {player_id}: x={parsed['x_pos']:.3f} y={parsed['y_pos']:.3f} "
+                  f"player_heading={parsed['player_heading']:.3f} cam={parsed['cam_heading']:.3f} "
+                  f"LR={parsed['left_right']:02x} UD={parsed['up_down']:02x} "
+                  f"unk1={parsed['unknown1'].hex()} player_idx={parsed['player_idx'].hex()}")
+
+            # Broadcast to other players in the same lobby
+            if lobby_name and channel_db_id is not None:
+                # with sessions_lock:
+                #     for s in sessions.values():
+                #         if s is session:
+                #             continue  # don't echo to sender
+                #         if s['addr'][1] == CLIENT_GAMEPLAY_PORT:
+                #             if s.get('player_id') and LobbyManager.get_lobby_name_for_player(channel_db_id, s.get('player_id')) == lobby_name:
+                #                 send_packet_to_client(s, data, note="[MOVE BROADCAST 0x1388]")
+                broadcast_to_lobby(lobby_name, channel_db_id, data, note=f"[MOVE BROADCAST 0x1388]", cur_session=session, to_self=False)
+            else:
+                print(f"[1388] WARNING: Could not find lobby/channel for movement broadcast for {player_id}")
+
+        except Exception as e:
+            print(f"[ERROR][1388] Failed to parse or broadcast movement packet: {e}")
+
+    # --- All other Gameplay ---
+    elif pkt_id >> 8 == 0x13: # check high byte - if packet_id is 0x13XX
+        player_id = session.get('player_id')
+        server_id = session.get('server_id')
+        channel_index = session.get('channel_index')
+        channel_db_id = ChannelManager.get_channel_db_id(server_id, channel_index)
+        lobby_name = None
+        if channel_db_id is not None and player_id:
+            lobby_name = LobbyManager.get_lobby_name_for_player(channel_db_id, player_id)
+        
+        # Broadcast to other players in the same lobby
+        if lobby_name and channel_db_id is not None:
+            # with sessions_lock:
+            #     for s in sessions.values():
+            #         if s is session:
+            #             continue  # don't echo to sender
+            #         if s['addr'][1] == CLIENT_GAMEPLAY_PORT:
+            #             if s.get('player_id') and LobbyManager.get_lobby_name_for_player(channel_db_id, s.get('player_id')) == lobby_name:
+            #                 send_packet_to_client(s, data, note=f"[GAMEPLAY BROADCAST {pkt_id:04x}]")
+            broadcast_to_lobby(lobby_name, channel_db_id, data, note=f"[GAMEPLAY BROADCAST {pkt_id:04x}]", cur_session=session, to_self=False)
+        else:
+            print(f"[{pkt_id:04x}] WARNING: Could not find lobby/channel for broadcast for {player_id}")
+
+    # --- Unhandled Packet ---
+    else:
+        print(f"[WARN] Unhandled packet ID: 0x{pkt_id:04x} from {session['addr']}")
+
+# --- Client Thread ---
+
+def client_thread(session):
+    sock = session['socket']
+    addr = session['addr']
+    print(f"[CONNECT] New connection from {addr}")
+
+    # Add to sessions registry
+    with sessions_lock:
+        sessions[addr] = session
+
+    try:
+        while True:
+            # Protocol: read header to get payload length
+            header = b''
+            while len(header) < 4:
+                chunk = sock.recv(4 - len(header))
+                if not chunk:
+                    raise ConnectionResetError
+                header += chunk
+            pkt_id, payload_len = struct.unpack('<HH', header)
+
+            # Now read the payload
+            payload = b''
+            while len(payload) < payload_len:
+                chunk = sock.recv(payload_len - len(payload))
+                if not chunk:
+                    raise ConnectionResetError
+                payload += chunk
+
+            data = header + payload
+            print(f"[RECV] From {addr}: {data.hex()} (pkt_id={pkt_id:04x}, {payload_len} bytes)")
+            handle_client_packet(session, data)
+
+    except (ConnectionResetError, BrokenPipeError):
+        print(f"[DISCONNECT] {addr} disconnected.")
+    except Exception as e:
+        print(f"[CLIENT ERROR] {addr}: {e}")
+    finally:
+        with sessions_lock:
+            sessions.pop(addr, None)
+        sock.close()
+        print(f"[CLOSE] Connection to {addr} closed.")
+
+# --- Main TCP server loop ---
+
+def start_server(host,listen_port):
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind((host, listen_port))
+    srv.listen(64)
+    print(f"[SERVER] LISTENING on {host}:{listen_port} \n")
+    while True:
+        try:
+            client_sock, addr = srv.accept()
+            # On connect, look up the Server object by port or bound IP (as needed)
+            server = ServerManager.get_server_by_ip(host)
+            session = {
+                'socket': client_sock,
+                'addr': addr,
+                'server': server if listen_port == SERVER_PORT else None,  # Store the server object if conn from SERVER_PORT
+                'server_id': server.id if server else None,
+                'player_id': None,
+                'channel_index': None
+                # other per-session state
+            }
+            threading.Thread(target=client_thread, args=(session,), daemon=True).start()
+        except Exception as e:
+            print(f"[ACCEPT ERROR] {e}")
+
+def start_manager(host,listen_port):
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind((host, listen_port))
+    srv.listen(64)
+    print(f"[MANAGER] LISTENING on {host}:{listen_port} \n")
+    while True:
+        try:
+            client_sock, addr = srv.accept()
+            session = {
+                'socket': client_sock,
+                'addr': addr
+                # other per-session state
+            }
+            threading.Thread(target=client_thread, args=(session,), daemon=True).start()
+        except Exception as e:
+            print(f"[ACCEPT ERROR] {e}")
+
+def admin_command_loop():
+    print("Admin console ready. Type 'help' for commands.")
+    while True:
+        try:
+            cmd = input("ADMIN> ").strip()
+            if not cmd:
+                continue
+            if cmd.lower() in ("quit", "exit"):
+                print("Exiting admin console (server still runs)...")
+                break
+            elif cmd.lower() == "help":
+                print("Commands:")
+                print("  sendhex HEXSTRING     # Send raw hex packet to all clients")
+                print("  quit                  # Exit admin console")
+            elif cmd.lower().startswith("sendhex "):
+                hex_str = cmd.split(" ", 1)[1]
+                try:
+                    payload = bytes.fromhex(hex_str.replace(' ', ''))
+                except Exception as e:
+                    print(f"Invalid hex: {e}")
+                    continue
+                broadcast_manual_packet(payload, note="ADMIN TERMINAL")
+                print(f"[ADMIN] Sent {len(payload)} bytes to all clients.")
+            else:
+                print("Unknown command. Type 'help' for help.")
+        except EOFError:
+            break
+        except KeyboardInterrupt:
+            break
+
+def broadcast_manual_packet(payload: bytes, note="MANUAL BROADCAST"):
+    """
+    Broadcast a manual packet to all currently connected sessions.
+    `payload` should be a complete packet (header + payload), e.g. from struct.pack or a hex string.
+    """
+    with sessions_lock:
+        for session in sessions.values():
+            try:
+                send_packet_to_client(session, payload, note=note)
+            except Exception as e:
+                print(f"[MANUAL BROADCAST ERROR] {session['addr']}: {e}")
 
 if __name__ == "__main__":
-    print(f"Waiting for connection on {HOST}:{TCP_PORT}")
-    threading.Thread(target=start_sniffer, daemon=True).start()
+    # Start both servers (main and server, if used)
+    threading.Thread(target=start_manager, args=(HOST,TCP_PORT,), daemon=True).start()
+    threading.Thread(target=start_server, args=(SERVER,SERVER_PORT,), daemon=True).start()
+    # Start admin console in main thread (so Ctrl+C works as expected)
+    time.sleep(1)
+    admin_command_loop()
+    print("Admin console closed. Server still running in background threads.")
     while True:
         time.sleep(1)
