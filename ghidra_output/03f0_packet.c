@@ -1,3 +1,5 @@
+
+Currently my server is receiving this packet from the game client:
 [RECV] From ('211.233.10.22', 3658): f0030d0043434343000000000000000000 (pkt_id=03f0, 13 bytes)
 [WARN] Unhandled packet ID: 0x03f0 from ('211.233.10.22', 3658)
 
@@ -17,7 +19,7 @@ this string is what i currently see on screen:
 "Waiting for other players. Please wait a moment."
 s_HANGUL#._._0025b090
 
-called from void FUN_0020e100
+this string is called from void FUN_0020e100 inside our function FUN_00159af0. How do i progress past this... I am just stuck on this screen. 
 
 Checked in PCSX2 Debug EERAM Memory Viewer
 sRam002c4056 = 01
@@ -32,26 +34,26 @@ cRam002a34b5 = 00
 cRam002a330c = 01
 iRam0025f338 = 00
 iRam0025f33c = 00
-cRam0025f370 = 
-uRam002c4052 = 
-sRam0025f374 = 
-sRam002a3310 = 
-cRam002a330d = 
-cRam002a3304 = 
-iRam0025f21c = 
-sRam0025f484 = 
-cRam002c4070 = 
-sRam002a2c8c = 
-iRam002a021c = 
-sRam0025f330 = 
-iRam0025f220 = 
-uRam0039eb58 = 
-sRam002a34bc = 
-iRam0025f4ec = 
-uRam002a0000 = 
-uRam002a0008 = 
-uRam002a0200 = 
-fRam002a0010 = 
+cRam0025f370 = 00
+uRam002c4052 = 11
+sRam0025f374 = 00
+sRam002a3310 = FFFF
+cRam002a330d = 00
+cRam002a3304 = 00
+iRam0025f21c = D0 (0025f21d and 0025f21e are 94 and 26)
+sRam0025f484 = 00
+cRam002c4070 = 00 (002c4071 is 01)
+sRam002a2c8c = 00
+iRam002a021c = D0 (0025f21d and 0025f21e are 94 and 26)
+sRam0025f330 = 00
+iRam0025f220 = 00
+uRam0039eb58 = 00
+sRam002a34bc = 00
+iRam0025f4ec = 00
+uRam002a0000 = 00
+uRam002a0008 = 00
+uRam002a0200 = 00
+fRam002a0010 = D8 0F 49 40
 
 void FUN_00159af0(undefined8 param_1,long param_2,long param_3,long param_4,ulong param_5,
                  ulong param_6,long param_7,long param_8)

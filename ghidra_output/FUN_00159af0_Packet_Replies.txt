@@ -83,8 +83,6 @@ sendhex f403040002000000
 sendhex ef03010000
 
 
-002698C0 ADDRESS : x
-
 I select MAP 1: I get 002d9a00 STNT01.SCR.M2 and STNT01_4.RES
 I select MAP 2: I get 002d9a00 STNT02.SCR.M2 and STNT02_4.RES
 I select MAP 3: I get 002d9a00 STNT03.SCR.M2 and STNT03_4.RES
@@ -97,3 +95,56 @@ with MAP 5 (RANDOM), breakpoint is not even reached, game detects no players and
 xPID xLEN xFLAG___ x40c x40a x408 x406 x404 x402 x400 x3fe x3f8 x3f6 x3f4 x3f2 x3f0
 9813 0800 00000000 0100 0000 0200 0000 0300 0000 0400 0500
 sendhex 981330000100000001000000020000000908070605040302111213141516171819202122232425262728293031323334353637383940
+                                         P1xxP2xx
+										 
+	
+Trying to fix initial placement player 2,3,4
+
+0026A550 seems to be Y for player_2 3 and 4
+0026A558 seems to be Y for player_2 3 and 4
+0026A500 and 0026A508 CAMERA
+
+ 
+Looking for memory writes/changes to 0026A550:
+
+line 001025c8 in FUN_00102580 called from 001fc734 in fun_001fc540, called from 0013e7a0 (fun_0013da90)
+
+
+For 001025c8 in FUN_00102580
+Register values:
+a0: 00000001
+a1: 0026a520
+a2: 0026a500
+a3: 34bfffff
+v0: 00000001
+v1: 00010000
+at: 3fc90fdb
+t0: 00000000
+t3: 005f6d10
+s0: 0026a500
+s1: 0026a520
+s2: 0026a520
+s3: 00000000
+s4: 00000008
+s5: 0000000c
+s6: 002D98C2
+s7: 002D98E2
+
+PLAYERS 2,3,4 are spawning at :
+y: 7fcaeb43
+x: 5607a643
+
+[1388] Movement from CCCC: x=-228.520 y=-0.083 player_heading=-2.983 cam=-1.412 LR=00 UD=00 unk1=0e00 player_idx=00000000
+[SEND] [BROADCAST CCCC] [MOVE BROADCAST 0x1388] To ('211.233.10.20', 3658): 8813180008b7a9bd168564c38aec3ec03cc9b4bf0
+
+PLAYER 1 is spawning at 002698C0   (even if lobby leader is player 2 , 3 ,4 - the only one who is getting placed seperately is player 1 and the other 3 are defaulting to the same position - the enemy AI only responds to player 1 it seems.)
+x: 7ffba1c3
+y: ac9cc3c3
+
+player 2 was at 00269cf0
+player 3 was at 0026a120
+
+
+there are two more memory addresses that have value 7fcaeb43
+00269ca0
+0026a0d0

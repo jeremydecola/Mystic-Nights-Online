@@ -34,7 +34,7 @@ def get_db_conn():
     return DB_CONN
 
 print("-----------------------------------")
-print("Mystic Nights Private Server v0.9.0")
+print("Mystic Nights Private Server v0.9.1")
 print("-----------------------------------")
 
 class Server:
@@ -777,14 +777,38 @@ def build_player_ready_ack(success=True, val=1):
     header = struct.pack('<HH', packet_id, len(payload))
     return header + payload
 
-def build_game_start_ack(player_id):
+import random
+import struct
+
+def build_game_start_ack(player_count=4):
+    """
+    Build the Game Start Ack packet (0xbc0).
+    - 16-byte field: 4 unique random start positions (0..11), each as 1 byte + 3 zero bytes.
+    - vampire_id: random 0..3
+    - param4: 4 (unchanged)
+    - map_id: random 0..4
+    """
     packet_id = 0xbc0
     flag = b'\x01\x00\x00\x00'
     pad = b'\x00\x00'
-    #pid = player_id.encode('ascii')[:16].ljust(16, b'\x00')
-    token = b'\x08'.ljust(16, b'\x00')
-    vampire_id, param4, map_id = 0, 2, 4 #vampire_id between 0 and 3 , map_id between 1 and 4
-    payload = flag + token + struct.pack('<H', vampire_id) + pad + struct.pack('<H', param4) + pad + struct.pack('<H', map_id)
+
+    # Generate unique random positions for each player (0..11)
+    start_positions = random.sample(range(12), k=player_count)
+    positions = b''.join(struct.pack('<B3x', pos) for pos in start_positions)
+    vampire_id = random.randint(0, 3)
+    unknown = 4  # keep as is (unless specified otherwise)
+    map_id = random.randint(1, 4) # If RANDOM map was selected, this value will be used
+    print(f"Start Positions:{start_positions}, Map:{map_id}, Vampire:{vampire_id}, ????:{unknown}")
+
+    payload = (
+        flag
+        + positions
+        + struct.pack('<H', vampire_id)
+        + pad
+        + struct.pack('<H', unknown)
+        + pad
+        + struct.pack('<H', map_id)
+    )
     header = struct.pack('<HH', packet_id, len(payload))
     return header + payload
 
@@ -1182,7 +1206,10 @@ def handle_client_packet(session, data):
             print(f"[0x7d8] Game Start request by {player_id} in lobby {lobby_name}")
             if channel_db_id is not None and lobby_name:
                 LobbyManager.set_lobby_status(channel_db_id, lobby_name, 2)  # 2 = started/in progress
-            bc0_response = build_game_start_ack(player_id)
+                with lobby_ready_lock:
+                    key = (channel_db_id, lobby_name)
+                    lobby_ready_counts[key] = 0 # RESET READY COUNT AS FAILSAFE
+            bc0_response = build_game_start_ack()
             broadcast_to_lobby(lobby_name, channel_db_id, bc0_response, note="[GAME START ACK]")
             #send_packet_to_client(session, bc0_response, note="[GAME START ACK]")
             # Optionally send updated lobby room packet:
@@ -1384,7 +1411,7 @@ def handle_client_packet(session, data):
             #print(f"Players Ready in '{lobby_name}': {cnt}/{lobby.player_count}")
             print(f"Players Ready in '{lobby_name}': {cnt}/2")
             #if cnt == lobby.player_count:  # All ready!
-            if cnt == 2:  # All ready!
+            if cnt >= 2:  # All ready!
                 # Broadcast countdown to all players in this lobby
                 for x in range(1, 5):
                     countdown_packet = build_countdown(x)
@@ -1432,7 +1459,8 @@ def handle_client_packet(session, data):
                 #         if s['addr'][1] == CLIENT_GAMEPLAY_PORT:
                 #             if s.get('player_id') and LobbyManager.get_lobby_name_for_player(channel_db_id, s.get('player_id')) == lobby_name:
                 #                 send_packet_to_client(s, data, note="[MOVE BROADCAST 0x1388]")
-                broadcast_to_lobby(lobby_name, channel_db_id, data, note=f"[MOVE BROADCAST 0x1388]", cur_session=session, to_self=False)
+                #broadcast_to_lobby(lobby_name, channel_db_id, data, note=f"[MOVE BROADCAST 0x1388]", cur_session=session, to_self=False)
+                broadcast_to_lobby(lobby_name, channel_db_id, data, note=f"[MOVE BROADCAST 0x1388]")
             else:
                 print(f"[1388] WARNING: Could not find lobby/channel for movement broadcast for {player_id}")
 
@@ -1458,7 +1486,8 @@ def handle_client_packet(session, data):
             #         if s['addr'][1] == CLIENT_GAMEPLAY_PORT:
             #             if s.get('player_id') and LobbyManager.get_lobby_name_for_player(channel_db_id, s.get('player_id')) == lobby_name:
             #                 send_packet_to_client(s, data, note=f"[GAMEPLAY BROADCAST {pkt_id:04x}]")
-            broadcast_to_lobby(lobby_name, channel_db_id, data, note=f"[GAMEPLAY BROADCAST {pkt_id:04x}]", cur_session=session, to_self=False)
+            #broadcast_to_lobby(lobby_name, channel_db_id, data, note=f"[GAMEPLAY BROADCAST {pkt_id:04x}]", cur_session=session, to_self=False)
+            broadcast_to_lobby(lobby_name, channel_db_id, data, note=f"[GAMEPLAY BROADCAST {pkt_id:04x}]")
         else:
             print(f"[{pkt_id:04x}] WARNING: Could not find lobby/channel for broadcast for {player_id}")
 

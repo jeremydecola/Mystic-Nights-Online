@@ -18,6 +18,14 @@ TBD
 TBD
 
 ## *PROGRESS*
+### 0.9.1
+* Fixed player starting positions logic and gameplay packet broadcasting
+  * Discovered player starting positions logic in bc0 game start packet
+  * Implemented vampire and map ID randomization in bc0 packet
+  * Reverted to full lobby broadcast for all 0x13XX packets. Resolved many issues such as enemy models not doing a death animation and despawning, items not dropping, kill count not incrementing, etc. 
+  * Each time the active vampire transforms, it currently loops a sound indefinitely. To be investigated. Potentially due to packet broadcasting change?
+  * No music plays during gameplay. Perhaps this is intended? 
+  
 ### 0.9.0
 * Started implementing gameplay packet handling
   * We are now able to reach the actual game world.
