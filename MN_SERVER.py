@@ -34,7 +34,7 @@ def get_db_conn():
     return DB_CONN
 
 print("-----------------------------------")
-print("Mystic Nights Private Server v0.8.3")
+print("Mystic Nights Private Server v0.9.0")
 print("-----------------------------------")
 
 class Server:
