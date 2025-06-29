@@ -34,7 +34,7 @@ def get_db_conn():
     return DB_CONN
 
 print("-----------------------------------")
-print("Mystic Nights Private Server v0.9.1")
+print("Mystic Nights Private Server v0.9.2")
 print("-----------------------------------")
 
 class Server:
@@ -509,6 +509,16 @@ class LobbyManager:
             conn.commit()
 
     @classmethod
+    def get_player_character_from_slot_id(cls, lobby_name, channel_db_id, slot_id):
+        """
+        Returns the playerX_character integer for the given slot_id (0-3) in the lobby.
+        """
+        lobby = cls.get_lobby_by_name(lobby_name, channel_db_id)
+        if lobby and 0 <= slot_id <= 3:
+            return lobby.player_characters[slot_id] or 0
+        return 0  # Return 0 (default) if not found or invalid slot
+    
+    @classmethod
     def print_lobby_table(cls, channel_id=None):
         """Prints a formatted table of all lobbies for the given channel_id (or all channels if None), using live DB data."""
         conn = get_db_conn()
@@ -780,13 +790,13 @@ def build_player_ready_ack(success=True, val=1):
 import random
 import struct
 
-def build_game_start_ack(player_count=4):
+def build_game_start_ack(lobby_name, channel_db_id, player_count=4):
     """
     Build the Game Start Ack packet (0xbc0).
     - 16-byte field: 4 unique random start positions (0..11), each as 1 byte + 3 zero bytes.
     - vampire_id: random 0..3
-    - param4: 4 (unchanged)
-    - map_id: random 0..4
+    - vampire_gender: 0: female, 1: male
+    - map_id: random 1..4
     """
     packet_id = 0xbc0
     flag = b'\x01\x00\x00\x00'
@@ -796,16 +806,20 @@ def build_game_start_ack(player_count=4):
     start_positions = random.sample(range(12), k=player_count)
     positions = b''.join(struct.pack('<B3x', pos) for pos in start_positions)
     vampire_id = random.randint(0, 3)
-    unknown = 4  # keep as is (unless specified otherwise)
+    vampire_character = LobbyManager.get_player_character_from_slot_id(lobby_name, channel_db_id, vampire_id)
+    if(vampire_character > 6): # if Kelly or Jane
+        vampire_gender = 0
+    else:
+        vampire_gender = 1
     map_id = random.randint(1, 4) # If RANDOM map was selected, this value will be used
-    print(f"Start Positions:{start_positions}, Map:{map_id}, Vampire:{vampire_id}, ????:{unknown}")
+    print(f"Start Positions:{start_positions}, Map:{map_id}, Vampire:{vampire_id}, Gender:{vampire_gender}")
 
     payload = (
         flag
         + positions
         + struct.pack('<H', vampire_id)
         + pad
-        + struct.pack('<H', unknown)
+        + struct.pack('<H', vampire_gender)
         + pad
         + struct.pack('<H', map_id)
     )
@@ -1209,7 +1223,7 @@ def handle_client_packet(session, data):
                 with lobby_ready_lock:
                     key = (channel_db_id, lobby_name)
                     lobby_ready_counts[key] = 0 # RESET READY COUNT AS FAILSAFE
-            bc0_response = build_game_start_ack()
+            bc0_response = build_game_start_ack(lobby_name, channel_db_id)
             broadcast_to_lobby(lobby_name, channel_db_id, bc0_response, note="[GAME START ACK]")
             #send_packet_to_client(session, bc0_response, note="[GAME START ACK]")
             # Optionally send updated lobby room packet:

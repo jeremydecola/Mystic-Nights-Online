@@ -18,6 +18,11 @@ TBD
 TBD
 
 ## *PROGRESS*
+### 0.9.2
+* Reverse engineered last remaining field in Game Start packet
+  * Discovered Gender field in Game Start bc0 packet which must be set to either 0 or 1
+    * Fixes issue with strange sounds looping on player movement in vampire mode. 
+
 ### 0.9.1
 * Fixed player starting positions logic and gameplay packet broadcasting
   * Discovered player starting positions logic in bc0 game start packet
