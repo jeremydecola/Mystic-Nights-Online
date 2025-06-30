@@ -1041,38 +1041,6 @@ def run_echo_challenge(session, payload=None, timeout=10, interval=1, on_result=
 
     threading.Thread(target=challenge_loop, daemon=True).start()
 
-def start_lobby_countdown(channel_db_id, lobby_name):
-    """
-    Checks lobby_echo_results for this lobby; if all pids in DB are marked (True/False), starts the countdown.
-    """
-    key = (channel_db_id, lobby_name)
-    with lobby_echo_lock:
-        lobby = LobbyManager.get_lobby_by_name(lobby_name, channel_db_id)
-        if not lobby:
-            print(f"[COUNTDOWN] Lobby {lobby_name} disappeared from DB.")
-            return
-        all_pids = [pid for pid in lobby.player_ids if pid]  # non-empty slots
-        results = lobby_echo_results.get(key, {})
-        # Only trigger when *all* (non-empty) slots have been resolved (either ready or DC)
-        if all(pid in results for pid in all_pids) and len(results) == len(all_pids):
-            print(f"[COUNTDOWN] All players in '{lobby_name}' have resolved (ready/DC). Starting countdown.")
-            def countdown_thread():
-                time.sleep(1)
-                for x in range(4, 0, -1):
-                    packet = build_countdown(x)
-                    broadcast_to_lobby(lobby_name, channel_db_id, packet, note=f"[COUNTDOWN {x}]")
-                    time.sleep(1)
-                broadcast_to_lobby(lobby_name, channel_db_id, build_countdown(0), note="[COUNTDOWN GO]")
-                # Cleanup for next round
-                with lobby_echo_lock:
-                    lobby_echo_results[key] = {}
-            threading.Thread(target=countdown_thread, daemon=True).start()
-        else:
-            # Not all players resolved yet, wait for more echo replies
-            pending = [pid for pid in all_pids if pid not in results]
-            print(f"[COUNTDOWN] Waiting for: {pending}")
-
-
 # def kill_process_using_port(port):
 #     print(f"Killing processes that may be using port {port}...")
 #     try:

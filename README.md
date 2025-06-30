@@ -28,7 +28,7 @@ TBD
   * It seems like the next player (player2) becomes the HOST. (To be confirmed) That would explain the behaviour, since I had no player2)
 * Added echo challenge before game counter starts.(tx: 0x3e9, rx: 0x3ea.
 * Added DC check on all lobby players based on session+player_id pair lookup.
-* Implemented Game Over (0x3f2), Disconnect (0x3f1), Rank Update (0x3f3) packet handlers.
+* Implemented Game Over (0x3f2) and Rank Update (0x3f3) packet handlers.
 * Observation: If the vampire player is marked as DC, the vampire is controlled by AI.
 
 ### 0.9.2
