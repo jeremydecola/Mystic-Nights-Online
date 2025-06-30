@@ -81,4 +81,34 @@ From here, walk to the LEFT briefly, release, repeat inching closer and closer t
 [RECV] From ('211.233.10.22', 3658): 8813 1800 7ffba1c3 ac9cc3c3 (xxxxx, this is the player model heading/rotation/facing ) 348d27c0 (pi/2, this is the camera heading of that player) d80fc93f 1000000000000000 (pkt_id=1388, 24 bytes)-
 
 #lets check out 0x1397
-971308000100000001000000
+8d1308000100000001000000
+
+c00b4c00010000004343434300000000000000000000000001230000010000000100
+
+if i send a 0x3e9 packet 
+e9030400XXXXXXXX
+
+sendhex e903040001000000
+the game echoes back, by sending an 0x3ea packet with the same exact payload (4 bytes - anything over 4 bytes is ignored).
+
+when the game is over, we receive two packets :
+
+0x3f3 followed by 0x3f2
+
+[RECV] From ('211.233.10.22', 3658): f30314004343434300000000000000000000000001000000 (pkt_id=03f3, 20 bytes)
+[WARN] Unhandled packet ID: 0x03f3 from ('211.233.10.22', 3658)
+[RECV] From ('211.233.10.20', 3658): f30314004141414100000000000000000000000000000000 (pkt_id=03f3, 20 bytes)
+[WARN] Unhandled packet ID: 0x03f3 from ('211.233.10.20', 3658)
+
+434343430000000000000000000000000 = player ID
+01000000 = VICTORY
+00000000 = DEFEAT
+We should Increment the RANK of the player by 5 if VICTORY and increment by 2 if defeat
+
+[RECV] From ('211.233.10.22', 3658): f2030d0043434343000000000000000000 (pkt_id=03f2, 13 bytes)
+[WARN] Unhandled packet ID: 0x03f2 from ('211.233.10.22', 3658)
+[RECV] From ('211.233.10.20', 3658): f2030d0041414141000000000000000000 (pkt_id=03f2, 13 bytes)
+[WARN] Unhandled packet ID: 0x03f2 from ('211.233.10.20', 3658
+
+43434343000000000000000000 = player ID
+Indicates that the player is no longer in game, we should change their ready status to NOT READY and send a lobby room packet broadcast

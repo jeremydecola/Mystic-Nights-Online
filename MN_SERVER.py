@@ -18,6 +18,8 @@ sessions = {}
 sessions_lock = threading.Lock()
 lobby_ready_counts = {}
 lobby_ready_lock = threading.Lock()
+lobby_echo_results = {}   # key: (channel_db_id, lobby_name) -> dict of pid: True/False (ready/dc)
+lobby_echo_lock = threading.Lock()
 
 # POSTGRES DATABASE CONNECTION
 DB_CONN = None
@@ -34,7 +36,7 @@ def get_db_conn():
     return DB_CONN
 
 print("-----------------------------------")
-print("Mystic Nights Private Server v0.9.2")
+print("Mystic Nights Private Server v0.9.3")
 print("-----------------------------------")
 
 class Server:
@@ -192,6 +194,16 @@ class PlayerManager:
             conn.rollback()
             print(f"[ERROR] General DB error during player deletion: {e}")
             return False
+        
+    @classmethod
+    def add_rank_points(cls, player_id, points, max_rank=199):
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE players SET rank = LEAST(rank + %s, %s) WHERE player_id = %s",
+                (points, max_rank, player_id)
+            )
+            conn.commit()
 
 class ChannelManager:
     @classmethod
@@ -498,6 +510,22 @@ class LobbyManager:
         return None
 
     @classmethod
+    def set_player_not_ready(cls, player_id, channel_db_id, lobby_name):
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE lobbies
+                SET player1_status = CASE WHEN player1_id=%s THEN 0 ELSE player1_status END,
+                    player2_status = CASE WHEN player2_id=%s THEN 0 ELSE player2_status END,
+                    player3_status = CASE WHEN player3_id=%s THEN 0 ELSE player3_status END,
+                    player4_status = CASE WHEN player4_id=%s THEN 0 ELSE player4_status END
+                WHERE name = %s AND channel_id = %s
+                """, (player_id, player_id, player_id, player_id, lobby_name, channel_db_id)
+            )
+            conn.commit()
+
+    @classmethod
     def set_lobby_status(cls, channel_db_id, lobby_name, status):
         """Set the lobby's status field in the DB (1=waiting, 2=started)."""
         conn = get_db_conn()
@@ -801,16 +829,23 @@ def build_game_start_ack(lobby_name, channel_db_id, player_count=4):
     packet_id = 0xbc0
     flag = b'\x01\x00\x00\x00'
     pad = b'\x00\x00'
+    g_logic = False
 
     # Generate unique random positions for each player (0..11)
     start_positions = random.sample(range(12), k=player_count)
     positions = b''.join(struct.pack('<B3x', pos) for pos in start_positions)
     vampire_id = random.randint(0, 3)
     vampire_character = LobbyManager.get_player_character_from_slot_id(lobby_name, channel_db_id, vampire_id)
-    if(vampire_character > 6): # if Kelly or Jane
-        vampire_gender = 0
+    # Assign gender based on gender of character
+    if (g_logic):
+        if(vampire_character > 6): # if Kelly or Jane
+            vampire_gender = 0
+        else:
+            vampire_gender = 1
+    # Assign gender randomly (likely the intended design - otherwise vampire identity is too obvious)
     else:
-        vampire_gender = 1
+        vampire_gender = random.randint(0, 1)
+
     map_id = random.randint(1, 4) # If RANDOM map was selected, this value will be used
     print(f"Start Positions:{start_positions}, Map:{map_id}, Vampire:{vampire_id}, Gender:{vampire_gender}")
 
@@ -961,6 +996,82 @@ def build_countdown(number):
     header = struct.pack('<HH', packet_id, payload_len)
     payload = struct.pack('<B', number)
     return header + payload
+
+def send_echo_challenge(session, payload=None, broadcast=False):
+    """
+    Send a 0x03e9 echo challenge packet to a client.
+    Payload should be 4 bytes (default = b'\x01\x00\x00\x00').
+    """
+    packet_id = 0x03e9
+    payload = payload or b'\x01\x00\x00\x00'
+    header = struct.pack('<HH', packet_id, len(payload))
+    packet = header + payload[:4]
+    if broadcast:
+        player_id = session.get('player_id')
+        server_id = session.get('server_id')
+        channel_index = session.get('channel_index')
+        channel_db_id = ChannelManager.get_channel_db_id(server_id, channel_index)
+        lobby_name = LobbyManager.get_lobby_name_for_player(channel_db_id, player_id)
+        broadcast_to_lobby(lobby_name, channel_db_id, packet, note="[ECHO CHALLENGE 0x03e9]")
+    else:
+        send_packet_to_client(session, packet, note="[ECHO CHALLENGE 0x03e9]")
+
+def run_echo_challenge(session, payload=None, timeout=10, interval=1, on_result=None):
+    """
+    Sends echo challenges at `interval` seconds until reply or `timeout` seconds passed.
+    Calls `on_result(success:bool)` with True if reply, False if timeout.
+    """
+
+    # Clear previous reply state
+    session['echo_reply_received'] = False
+
+    def challenge_loop():
+        for i in range(timeout):
+            if session.get('echo_reply_received'):
+                print(f"[ECHO CHALLENGE] Player {session.get('player_id')} replied within {i+1}s.")
+                if on_result:
+                    on_result(True)
+                return
+            send_echo_challenge(session, payload)
+            time.sleep(interval)
+        # Timeout
+        print(f"[ECHO CHALLENGE] Player {session.get('player_id')} did not reply within {timeout}s.")
+        if on_result:
+            on_result(False)
+
+    threading.Thread(target=challenge_loop, daemon=True).start()
+
+def start_lobby_countdown(channel_db_id, lobby_name):
+    """
+    Checks lobby_echo_results for this lobby; if all pids in DB are marked (True/False), starts the countdown.
+    """
+    key = (channel_db_id, lobby_name)
+    with lobby_echo_lock:
+        lobby = LobbyManager.get_lobby_by_name(lobby_name, channel_db_id)
+        if not lobby:
+            print(f"[COUNTDOWN] Lobby {lobby_name} disappeared from DB.")
+            return
+        all_pids = [pid for pid in lobby.player_ids if pid]  # non-empty slots
+        results = lobby_echo_results.get(key, {})
+        # Only trigger when *all* (non-empty) slots have been resolved (either ready or DC)
+        if all(pid in results for pid in all_pids) and len(results) == len(all_pids):
+            print(f"[COUNTDOWN] All players in '{lobby_name}' have resolved (ready/DC). Starting countdown.")
+            def countdown_thread():
+                time.sleep(1)
+                for x in range(4, 0, -1):
+                    packet = build_countdown(x)
+                    broadcast_to_lobby(lobby_name, channel_db_id, packet, note=f"[COUNTDOWN {x}]")
+                    time.sleep(1)
+                broadcast_to_lobby(lobby_name, channel_db_id, build_countdown(0), note="[COUNTDOWN GO]")
+                # Cleanup for next round
+                with lobby_echo_lock:
+                    lobby_echo_results[key] = {}
+            threading.Thread(target=countdown_thread, daemon=True).start()
+        else:
+            # Not all players resolved yet, wait for more echo replies
+            pending = [pid for pid in all_pids if pid not in results]
+            print(f"[COUNTDOWN] Waiting for: {pending}")
+
 
 # def kill_process_using_port(port):
 #     print(f"Killing processes that may be using port {port}...")
@@ -1399,40 +1510,126 @@ def handle_client_packet(session, data):
         else:
             print("[ERROR] Missing server_id or channel_index in session.")
     
-    # --- Ready Check ---
     elif pkt_id == 0x03f0:
         player_id = session.get('player_id')
         server_id = session.get('server_id')
         channel_index = session.get('channel_index')
         channel_db_id = ChannelManager.get_channel_db_id(server_id, channel_index)
         lobby_name = LobbyManager.get_lobby_name_for_player(channel_db_id, player_id)
-        player_index = None
-        # Find the player's index (0–3) in the lobby
         lobby = LobbyManager.get_lobby_by_name(lobby_name, channel_db_id)
-        if lobby and player_id in lobby.player_ids:
-            player_index = lobby.player_ids.index(player_id)
-        else:
-            print("[READY] Could not find player index in lobby.")
+        if not lobby:
+            print("[READY] Could not find lobby for player.")
             return
-        response = build_ready_ack(player_index)
-        send_packet_to_client(session, response, note=f"[READY ACK]")
+    
+        key = (channel_db_id, lobby_name)
+    
+        def after_echo(success):
+            # 1. Mark this player’s echo result
+            with lobby_echo_lock:
+                d = lobby_echo_results.setdefault(key, {})
+                d[player_id] = success
+                print(f"[READY] Echo reply for '{player_id}' is {'READY' if success else 'DC'}")
+    
+            # 2. Check and mark DCs for all other slots (not self)
+            for idx, pid in enumerate(lobby.player_ids):
+                if not pid or pid == player_id:
+                    continue
+                # If not already resolved, check for active session
+                with sessions_lock:
+                    active = any(
+                        s.get("player_id") == pid and s['addr'][1] == CLIENT_GAMEPLAY_PORT
+                        for s in sessions.values()
+                    )
+                with lobby_echo_lock:
+                    d = lobby_echo_results.setdefault(key, {})
+                    if not active and pid not in d:
+                        d[pid] = False  # Mark as DC
+                        dc_packet = build_ready_ack(idx)
+                        broadcast_to_lobby(lobby_name, channel_db_id, dc_packet, note=f"[PLAYER DC {idx}]")
+                        print(f"[READY] {pid} has no active session, marked as DC, slot {idx}")
+    
+            # 3. Check if ALL 4 slots are resolved for non-empty player_ids
+            with lobby_echo_lock:
+                non_empty_ids = [pid for pid in lobby.player_ids if pid]
+                resolved = [pid for pid in non_empty_ids if pid in lobby_echo_results[key]]
+                num_dc = sum(1 for pid in non_empty_ids if lobby_echo_results[key].get(pid) is False)
+                print(f"[READY] Resolved: {resolved} / {non_empty_ids}")
+                if len(resolved) == len(non_empty_ids):
+                    print(f"[COUNTDOWN] All players resolved ({len(non_empty_ids)} slots, {num_dc} DC). Starting countdown.")
+                    def countdown_thread():
+                        time.sleep(1)
+                        for x in range(4, 0, -1):
+                            packet = build_countdown(x)
+                            broadcast_to_lobby(lobby_name, channel_db_id, packet, note=f"[COUNTDOWN {x}]")
+                            time.sleep(1)
+                        broadcast_to_lobby(lobby_name, channel_db_id, build_countdown(0), note="[COUNTDOWN GO]")
+                        with lobby_echo_lock:
+                            lobby_echo_results[key] = {}  # Reset for next round
+                    threading.Thread(target=countdown_thread, daemon=True).start()
+    
+        # Launch echo only for THIS player, callback does the rest
+        threading.Thread(
+            target=run_echo_challenge,
+            args=(session,),
+            kwargs={'timeout': 10, 'on_result': after_echo},
+            daemon=True
+        ).start()
 
-        # --- GLOBAL READY COUNT TRACKING ---
-        with lobby_ready_lock:
-            key = (channel_db_id, lobby_name)
-            cnt = lobby_ready_counts.get(key, 0) + 1
-            lobby_ready_counts[key] = cnt
-            #print(f"Players Ready in '{lobby_name}': {cnt}/{lobby.player_count}")
-            print(f"Players Ready in '{lobby_name}': {cnt}/2")
-            #if cnt == lobby.player_count:  # All ready!
-            if cnt >= 2:  # All ready!
-                # Broadcast countdown to all players in this lobby
-                for x in range(1, 5):
-                    countdown_packet = build_countdown(x)
-                    broadcast_to_lobby(lobby_name, channel_db_id, countdown_packet, note=f"[COUNTDOWN {x}]")
-                    time.sleep(1)  # Optional: for visible countdown effect
-                broadcast_to_lobby(lobby_name, channel_db_id, build_countdown(0), note="[COUNTDOWN GO]")
-                lobby_ready_counts[key] = 0  # Reset for next game
+    # --- Disconnect  ---
+    elif pkt_id == 0x03f1: 
+        player_id = session.get('player_id')
+        server_id = session.get('server_id')
+        channel_index = session.get('channel_index')
+        channel_db_id = ChannelManager.get_channel_db_id(server_id, channel_index)
+        lobby_name = None
+        if channel_db_id is not None and player_id:
+            lobby_name = LobbyManager.get_lobby_name_for_player(channel_db_id, player_id)
+        
+        # Broadcast to players in the lobby
+        if lobby_name and channel_db_id is not None:
+            broadcast_to_lobby(lobby_name, channel_db_id, data, note=f"[DISCONNECT BROADCAST {pkt_id}]")
+        else:
+            print(f"[{pkt_id}] WARNING: Could not find lobby/channel for broadcast for {player_id}")
+
+    # --- Game Result / Update Rank ---
+    elif pkt_id == 0x03f3:
+        """
+        If player wins, increment RANK score by 5 points
+        If player loses, increment RANK score by 2 points
+        """    
+        player_id = data[4:12].decode('ascii').rstrip('\x00')
+        victory_flag = data[16:20]
+        is_victory = victory_flag == b'\x01\x00\x00\x00'
+        points = 5 if is_victory else 2
+        print(f"[GAME END] Player {player_id} {'VICTORY' if is_victory else 'DEFEAT'}, +{points} pts")
+        PlayerManager.add_rank_points(player_id, points)
+
+    # --- Game Over ---
+        """
+        Update the player's status and broadcast lobby room info
+        """            
+    elif pkt_id == 0x03f2:
+        player_id = data[4:12].decode('ascii').rstrip('\x00')
+        server_id = session.get('server_id')
+        channel_index = session.get('channel_index')
+        channel_db_id = ChannelManager.get_channel_db_id(server_id, channel_index)
+        lobby_name = LobbyManager.get_lobby_name_for_player(channel_db_id, player_id)
+        if not lobby_name:
+            print(f"[0x3f2] Could not find lobby for {player_id}")
+            return
+        LobbyManager.set_player_not_ready(player_id, channel_db_id, lobby_name)
+        room_packet = build_lobby_room_packet(lobby_name, channel_db_id)
+        broadcast_to_lobby(lobby_name, channel_db_id, room_packet, note="[LOBBY ROOM INFO]")
+    
+    # --- Echo Reply ---
+    elif pkt_id == 0x03ea:
+        # The payload is always the last 4 bytes after the 4-byte header
+        if len(data) >= 8:
+            payload = data[-4:]
+            print(f"[ECHO REPLY 0x03ea] Payload: {payload.hex()}")
+            session['echo_reply_received'] = True
+        else:
+            print(f"[ECHO REPLY 0x03ea] Packet too short: {data.hex()}")
 
 # --- Gameplay Loop ---
 

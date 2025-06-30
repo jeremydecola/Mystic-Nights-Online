@@ -80,6 +80,7 @@ sendhex ef03010001 #displays a 1 on the screen
 sendhex ef03010000 #starts the game 
 
 sendhex f403040002000000
+sendhex f403040000000000
 sendhex ef03010000
 
 

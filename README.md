@@ -18,9 +18,22 @@ TBD
 TBD
 
 ## *PROGRESS*
+### 0.9.3
+* Implemented all remaining necessary packet handlers
+* Assigning gender randomly (likely the intended design - otherwise vampire identity is too obvious)
+  * Leaving the ability to toggle back to Vampire Gender = Character Gender
+* Added 0x3f1 packet handling. (Player Disconnect broadcast).
+* Investigated no BGM > likely intended. Abandonning further investigation on missing BGM.
+* When the HOST (player1) disconnects, the enemy AI stop reacting to other players.
+  * It seems like the next player (player2) becomes the HOST. (To be confirmed) That would explain the behaviour, since I had no player2)
+* Added echo challenge before game counter starts.(tx: 0x3e9, rx: 0x3ea.
+* Added DC check on all lobby players based on session+player_id pair lookup.
+* Implemented Game Over (0x3f2), Disconnect (0x3f1), Rank Update (0x3f3) packet handlers.
+* Observation: If the vampire player is marked as DC, the vampire is controlled by AI.
+
 ### 0.9.2
 * Reverse engineered last remaining field in Game Start packet
-  * Discovered Gender field in Game Start bc0 packet which must be set to either 0 or 1
+  * Discovered Gender field in Game Start bc0 packet which must be set to either 0 or 1.
     * Fixes issue with strange sounds looping on player movement in vampire mode. 
 
 ### 0.9.1

@@ -49,7 +49,7 @@ void FUN_0021e6c0(undefined4 *param_1,undefined8 param_2,undefined8 param_3,unde
     *(undefined1 *)(iVar5 + 0x69) = *(undefined1 *)((int)puVar6 + 0x31); //Handles Character Select Byte - 0x39eca0 + 0x69 -> 0x39ed09
     *(undefined1 *)(iVar5 + 0x6a) = *(undefined1 *)((int)puVar6 + 0x32); //Handles Status Byte - 0x39eca0 + 0x6a -> 0x39ed0a  
     *(undefined4 *)(iVar5 + 0x6c) = puVar6[0xd]; //Rank (4 bytes - only 1st byte should be touched) - 0x39eca0 + 0x6c -> 0x39ed0c - ex: first player, puVar6 + (0xd*4 bytes) || param_1 + 0x34
-  //RANK byte 1= E: [00, 0a] || D: [0b, 1e] || C: [1f,32] || B: [33,5a] || A: [5b, 8c] || S: [8d, 9f] || X: 9f01+
+  //RANK byte 1= E: [00, 0a] || D: [0b, 1e] || C: [1f,32] || B: [33,5a] || A: [5b, 8c] || S: [8d, c7] || X: 4d+01+  - essentially rank is between [0,199] 
     *(undefined4 *)(iVar5 + 0x70) = puVar6[0xe]; // UNKNOWN 4 bytes - 0x39eca0 + 0x70 -> 0x39ed10 - ex: first player, puVar6 + (0xe*4 bytes) || param_1 + 0x38
     *(undefined4 *)(iVar5 + 0x74) = puVar6[0xf]; //UNKNOWN 4 bytes - 0x39eca0 + 0x74 -> 0x39ed14  - ex: first player, puVar6 + (0xe*4 bytes) || param_1 + 0x3c
     puVar6 = puVar6 + 7;
