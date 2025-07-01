@@ -18,6 +18,18 @@ TBD
 TBD
 
 ## *PROGRESS*
+### 0.9.4
+* Implemented watcher for disconnected player handling and implemented lobby HOST reassigment and lobby deletion conditions
+* When a player disconnects while in game with  0x03f1 packet , the server removes that player from the lobby. 
+  * If they were the "leader" in that lobby, the leader should become the lowest player index in the remaining players. 
+* When a player leaves a lobby while in queue with a 0x07da packet  the server removes that player from the lobby. 
+  * If they were the "leader" in that lobby, the leader should become the lowest player index in the remaining players. 
+* If a player leaves a lobby and there are no more players to transfer leadership (leader) to , then the lobby is deleted from the database and that idx_in_channel becomes free to claim by the next created lobby
+* When a Game Over 0x03f2 packet is received, we now set the lobby's status to 1 (In Queue) instead of 2 (Started)
+* The server's main loop periodically sends an echo challenge on all player's that have joined a lobby and whose session we have not received a packet from in over 30 seconds. 
+  * If they fail the echo challenge, they are removed from the lobby. 
+  * If they were the "leader" in that lobby, the leader becomes the lowest player index in the remaining players. 
+
 ### 0.9.3
 * Implemented all remaining necessary packet handlers
 * Assigning gender randomly (likely the intended design - otherwise vampire identity is too obvious)

@@ -4,6 +4,10 @@ import struct
 import psycopg2
 import os
 import time
+import uuid
+import logging
+import sys
+import functools
 
 # ========== NETWORKING AND SERVER ==========
 
@@ -12,6 +16,7 @@ TCP_PORT = 18000
 SERVER = '211.233.10.5' 
 SERVER_PORT = 18001
 CLIENT_GAMEPLAY_PORT = 3658
+DEBUG = True
 
 # Global registry for sessions
 sessions = {}
@@ -20,6 +25,9 @@ lobby_ready_counts = {}
 lobby_ready_lock = threading.Lock()
 lobby_echo_results = {}   # key: (channel_db_id, lobby_name) -> dict of pid: True/False (ready/dc)
 lobby_echo_lock = threading.Lock()
+# Dict of last-packet times: key = player_id, value = timestamp
+last_packet_times = {}
+last_packet_lock = threading.Lock()
 
 # POSTGRES DATABASE CONNECTION
 DB_CONN = None
@@ -35,8 +43,28 @@ def get_db_conn():
         )
     return DB_CONN
 
+if DEBUG:
+    # Clear the trace log on each script run
+    if os.path.exists("trace.log"):
+        open("trace.log", "w").close()
+    logging.basicConfig(filename="trace.log", level=logging.DEBUG)
+    logging.getLogger("importlib").setLevel(logging.WARNING)
+    logging.getLogger("asyncio").setLevel(logging.WARNING)
+
+def trace_calls(func):
+    if not DEBUG:
+        return func  # Return the original function unwrapped
+    
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        logging.debug(f"[CALL] {func.__name__} args={args} kwargs={kwargs}")
+        result = func(*args, **kwargs)
+        logging.debug(f"[RETURN] {func.__name__} result={result}")
+        return result
+    return wrapper
+
 print("-----------------------------------")
-print("Mystic Nights Private Server v0.9.3")
+print("Mystic Nights Private Server v0.9.4")
 print("-----------------------------------")
 
 class Server:
@@ -465,6 +493,86 @@ class LobbyManager:
         return False
 
     @classmethod
+    def remove_player_and_update_leader(cls, player_id, channel_db_id):
+        """
+        Thread-safe removal of a player from their lobby.
+        Updates leader, and deletes lobby if empty.
+        Returns (lobby_name, lobby_deleted: bool)
+        """
+        print(f"[DEBUG] Attempting to remove {player_id} from lobby in channel {channel_db_id}")
+
+        with sessions_lock:  # Lock added for thread-safety
+            conn = get_db_conn()
+            with conn.cursor() as cur:
+                # Find the lobby where player is present
+                cur.execute("""
+                    SELECT id, name, leader,
+                           player1_id, player2_id, player3_id, player4_id
+                    FROM lobbies
+                    WHERE channel_id = %s AND (%s = ANY(ARRAY[player1_id, player2_id, player3_id, player4_id]))
+                    """, (channel_db_id, player_id))
+                row = cur.fetchone()
+                if not row:
+                    return (None, False)
+
+                lobby_id, lobby_name, leader, p1, p2, p3, p4 = row
+                player_slots = [p1, p2, p3, p4]
+
+                # Find which slot to clear
+                cleared = False
+                for idx, pid in enumerate(player_slots, 1):
+                    if pid == player_id:
+                        cur.execute(f"""
+                            UPDATE lobbies
+                            SET player{idx}_id = NULL,
+                                player{idx}_character = NULL,
+                                player{idx}_status = NULL,
+                                player_count = GREATEST(player_count - 1, 0)
+                            WHERE id = %s
+                        """, (lobby_id,))
+                        cleared = True
+                conn.commit()
+                if not cleared:
+                    return (None, False)
+
+                # Reload updated slots and leader
+                cur.execute("SELECT leader, player1_id, player2_id, player3_id, player4_id FROM lobbies WHERE id=%s", (lobby_id,))
+                leader, p1, p2, p3, p4 = cur.fetchone()
+                slots = [(1, p1), (2, p2), (3, p3), (4, p4)]
+                non_empty = [(i, pid) for i, pid in slots if pid]
+                # If leader was removed or is now None, assign to lowest index remaining
+                if (leader == player_id) or (not leader) or (leader not in [pid for _, pid in non_empty]):
+                    new_leader = non_empty[0][1] if non_empty else None
+                    cur.execute("UPDATE lobbies SET leader=%s WHERE id=%s", (new_leader, lobby_id))
+                    conn.commit()
+
+                # If lobby is now empty, delete it
+                if not non_empty:
+                    cur.execute("DELETE FROM lobbies WHERE id=%s", (lobby_id,))
+                    conn.commit()
+                    print(f"[LOBBY DELETED] Lobby '{lobby_name}' deleted (was empty after player leave/disconnect).")
+                    return (lobby_name, True)
+
+                return (lobby_name, False)
+
+    @classmethod
+    def safe_remove_player_from_lobby(cls, session):
+        player_id = session.get('player_id')
+        server_id = session.get('server_id')
+        channel_index = session.get('channel_index')
+        if not (player_id and server_id is not None and channel_index is not None):
+            return
+        channel_db_id = ChannelManager.get_channel_db_id(server_id, channel_index)
+        if channel_db_id is None:
+            return
+        lobby_name = LobbyManager.get_lobby_name_for_player(channel_db_id, player_id)
+        if not lobby_name:
+            return
+        LobbyManager.remove_player_and_update_leader(player_id, channel_db_id)
+        room_packet = build_lobby_room_packet(lobby_name, channel_db_id)
+        broadcast_to_lobby(lobby_name, channel_db_id, room_packet, note="[ECHO DC CLEANUP]")
+
+    @classmethod
     def is_player_in_lobby_db(cls, lobby_name, channel_db_id, player_id):
         """Return True if the player is in the named lobby in this channel."""
         conn = get_db_conn()
@@ -636,7 +744,6 @@ def build_channel_join_ack(success=True, val=1):
         flag = b'\x01\x00\x00\x00'
     else:
         flag = b'\x00'
-    flag = b'\x01\x00\x00\x00'
     payload = flag + struct.pack('<H', val)
     packet_len = len(payload)
     header = struct.pack('<HH', packet_id, packet_len)
@@ -996,7 +1103,7 @@ def build_countdown(number):
     header = struct.pack('<HH', packet_id, payload_len)
     payload = struct.pack('<B', number)
     return header + payload
-
+@trace_calls
 def send_echo_challenge(session, payload=None, broadcast=False):
     """
     Send a 0x03e9 echo challenge packet to a client.
@@ -1016,6 +1123,7 @@ def send_echo_challenge(session, payload=None, broadcast=False):
     else:
         send_packet_to_client(session, packet, note="[ECHO CHALLENGE 0x03e9]")
 
+@trace_calls
 def run_echo_challenge(session, payload=None, timeout=10, interval=1, on_result=None):
     """
     Sends echo challenges at `interval` seconds until reply or `timeout` seconds passed.
@@ -1023,16 +1131,18 @@ def run_echo_challenge(session, payload=None, timeout=10, interval=1, on_result=
     """
 
     # Clear previous reply state
-    session['echo_reply_received'] = False
+    with sessions_lock:
+        session['echo_reply_received'] = False
 
     def challenge_loop():
+        phrases = [b"FIRE", b"WALK", b"WITH", b"ME  "]
         for i in range(timeout):
             if session.get('echo_reply_received'):
                 print(f"[ECHO CHALLENGE] Player {session.get('player_id')} replied within {i+1}s.")
                 if on_result:
                     on_result(True)
                 return
-            send_echo_challenge(session, payload)
+            send_echo_challenge(session, phrases[i % len(phrases)])
             time.sleep(interval)
         # Timeout
         print(f"[ECHO CHALLENGE] Player {session.get('player_id')} did not reply within {timeout}s.")
@@ -1078,24 +1188,34 @@ def parse_packet_header(data):
     return packet_id, payload_len
 
 def broadcast_to_lobby(lobby_name, channel_db_id, payload, note="", cur_session=None, to_self=True):
-    # 1. Get the lobby object
+    """
+    Broadcast a packet to all gameplay clients (port 3658) in the specified lobby.
+    Avoids sending to `cur_session` if `to_self` is False.
+    """
     lobby = LobbyManager.get_lobby_by_name(lobby_name, channel_db_id)
     if not lobby:
         print(f"[BROADCAST ERROR] Lobby '{lobby_name}' not found in channel {channel_db_id}")
         return
 
-    # 2. Get player_ids in lobby (filter out None)
-    player_ids = [pid for pid in lobby.player_ids if pid]
+    target_ids = {pid for pid in lobby.player_ids if pid}
 
-    # 3. For each session, if the player_id matches, send
     with sessions_lock:
-        for s in sessions.values():
-            if (to_self or s!=cur_session):
-                # Only send to actual gameplay server connections (port 3658)
-                # session['addr'] is a tuple: (ip, port)
-                if s.get("player_id") in player_ids and s['addr'][1] == CLIENT_GAMEPLAY_PORT:
-                    send_packet_to_client(s, payload, note=f"[BROADCAST {lobby_name}] {note}")
+        targets = [
+            s for s in sessions.values()
+            if s.get("player_id") in target_ids and s['addr'][1] == CLIENT_GAMEPLAY_PORT
+        ]
 
+    for s in targets:
+        if s.get('removed') or not is_session_socket_alive(s):
+            continue
+        if not to_self and s is cur_session:
+            continue
+        try:
+            send_packet_to_client(s, payload, note=f"[BROADCAST {lobby_name}] {note}")
+        except Exception as e:
+            print(f"[BROADCAST ERROR] {s['addr']}: {e}")
+
+@trace_calls
 def handle_client_packet(session, data):
 
     # The session is now a dict: {'socket': sock, 'addr': addr, ...}
@@ -1108,7 +1228,8 @@ def handle_client_packet(session, data):
         return
 
     response = None
-    
+    update_last_packet_time(session)
+
     # --- Login ---
     if pkt_id == 0x07d0:
         print("[DEBUG] Handling 0x07d0 LOGIN packet")
@@ -1347,16 +1468,16 @@ def handle_client_packet(session, data):
             if channel_db_id is None:
                 print(f"[ERROR] No channel DB id for server_id={server_id}, channel_index={channel_index}")
                 ack_packet = build_lobby_leave_ack()
-            elif not LobbyManager.remove_player_from_lobby_db(player_id, channel_db_id):
-                print(f"[WARN] Could not remove player {player_id} from lobby in channel {channel_db_id}")
-                ack_packet = build_lobby_leave_ack()
-            else:
-                print(f"[LEAVE] Removed player: {player_id} from channel {channel_db_id}")
-                print("Broadcasting to players who remain in that lobby.")
-                room_packet = build_lobby_room_packet(lobby_name, channel_db_id)
-                broadcast_to_lobby(lobby_name, channel_db_id, room_packet, note="LOBBY ROOM UPDATE")
-                ack_packet = build_lobby_leave_ack()
+            removed_lobby, lobby_deleted = LobbyManager.remove_player_and_update_leader(player_id, channel_db_id)
+            ack_packet = build_lobby_leave_ack()
             send_packet_to_client(session, ack_packet, note="[LOBBY LEAVE ACK]")
+            if not lobby_deleted:
+                # Update remaining players
+                room_packet = build_lobby_room_packet(removed_lobby, channel_db_id)
+                broadcast_to_lobby(removed_lobby, channel_db_id, room_packet, note="LOBBY ROOM UPDATE")
+            else:
+                print(f"[LEAVE] Lobby '{removed_lobby}' deleted after last player left.")
+
         else:
             print(f"[ERROR] Malformed 0x07da packet (len={len(data)})")
             #ack_packet = LOGIC TO BE IMPLEMENTED
@@ -1368,12 +1489,13 @@ def handle_client_packet(session, data):
             kick_idx = struct.unpack('<I', data[4:12])[0]
             server_id = session.get('server_id')
             channel_index = session.get('channel_index')
-            channel_db_id = ChannelManager.get_channel_db_id(server_id, channel_index)
-            print(f"[0x07db] Kick request: remove player at index {kick_idx} (channel_db_id={channel_db_id})")
-            ack_packet = build_kick_player_ack()
-            send_packet_to_client(session, ack_packet, note="[KICK ACK]")
             player_id = session.get('player_id')
+            channel_db_id = ChannelManager.get_channel_db_id(server_id, channel_index)
             lobby_name = LobbyManager.get_lobby_name_for_player(channel_db_id, player_id)
+            print(f"[0x07db] Kick request: remove player at index {kick_idx} (channel_db_id={channel_db_id})")
+            kick_packet = build_kick_player_ack()
+            #send_packet_to_client(session, kick_packet, note="[PLAYER KICKED]")")
+            broadcast_to_lobby(lobby_name, channel_db_id, kick_packet, note="[PLAYER KICKED]")
             if lobby_name:
                 lobby = LobbyManager.get_lobby_by_name(lobby_name, channel_db_id)
                 if lobby and 0 <= kick_idx < 4:
@@ -1478,6 +1600,7 @@ def handle_client_packet(session, data):
         else:
             print("[ERROR] Missing server_id or channel_index in session.")
     
+    # --- Game Ready Check ---
     elif pkt_id == 0x03f0:
         player_id = session.get('player_id')
         server_id = session.get('server_id')
@@ -1556,6 +1679,15 @@ def handle_client_packet(session, data):
         # Broadcast to players in the lobby
         if lobby_name and channel_db_id is not None:
             broadcast_to_lobby(lobby_name, channel_db_id, data, note=f"[DISCONNECT BROADCAST {pkt_id}]")
+            # Remove player, update leader, and delete lobby if empty
+            removed_lobby, lobby_deleted = LobbyManager.remove_player_and_update_leader(player_id, channel_db_id)
+            if not lobby_deleted:
+                # Broadcast updated room info to remaining players
+                room_packet = build_lobby_room_packet(lobby_name, channel_db_id)
+                broadcast_to_lobby(lobby_name, channel_db_id, room_packet, note="[DISCONNECT ROOM UPDATE]")
+            else:
+                print(f"[DISCONNECT] Lobby '{lobby_name}' deleted after last player left/disconnected.")
+
         else:
             print(f"[{pkt_id}] WARNING: Could not find lobby/channel for broadcast for {player_id}")
 
@@ -1585,6 +1717,9 @@ def handle_client_packet(session, data):
         if not lobby_name:
             print(f"[0x3f2] Could not find lobby for {player_id}")
             return
+        # -- set lobby status to 1 (In Queue)
+        LobbyManager.set_lobby_status(channel_db_id, lobby_name, 1)
+        # -- set Player status to 1 (Not Ready)
         LobbyManager.set_player_not_ready(player_id, channel_db_id, lobby_name)
         room_packet = build_lobby_room_packet(lobby_name, channel_db_id)
         broadcast_to_lobby(lobby_name, channel_db_id, room_packet, note="[LOBBY ROOM INFO]")
@@ -1595,7 +1730,8 @@ def handle_client_packet(session, data):
         if len(data) >= 8:
             payload = data[-4:]
             print(f"[ECHO REPLY 0x03ea] Payload: {payload.hex()}")
-            session['echo_reply_received'] = True
+            with sessions_lock:
+                session['echo_reply_received'] = True
         else:
             print(f"[ECHO REPLY 0x03ea] Packet too short: {data.hex()}")
 
@@ -1605,7 +1741,7 @@ def handle_client_packet(session, data):
     elif pkt_id == 0x1388:
         try:
             parsed = parse_move_packet(data)
-            # Store state for session if you wanta
+            # Store state for session
             session['y'] = parsed['y_pos']
             session['x'] = parsed['x_pos']
             session['player_heading'] = parsed['player_heading']
@@ -1675,7 +1811,7 @@ def handle_client_packet(session, data):
         print(f"[WARN] Unhandled packet ID: 0x{pkt_id:04x} from {session['addr']}")
 
 # --- Client Thread ---
-
+@trace_calls
 def client_thread(session):
     sock = session['socket']
     addr = session['addr']
@@ -1711,12 +1847,9 @@ def client_thread(session):
     except (ConnectionResetError, BrokenPipeError):
         print(f"[DISCONNECT] {addr} disconnected.")
     except Exception as e:
-        print(f"[CLIENT ERROR] {addr}: {e}")
+            print(f"[CLIENT ERROR] {addr}: {e}")
     finally:
-        with sessions_lock:
-            sessions.pop(addr, None)
-        sock.close()
-        print(f"[CLOSE] Connection to {addr} closed.")
+        full_disconnect(session)
 
 # --- Main TCP server loop ---
 
@@ -1792,6 +1925,180 @@ def admin_command_loop():
         except KeyboardInterrupt:
             break
 
+@trace_calls
+def is_session_socket_alive(session):
+    sock = session.get('socket')
+    if not sock:
+        return False
+    try:
+        sock.send(b'')  # Zero-byte send for socket health check
+        return True
+    except OSError:
+        return 
+    
+@trace_calls
+def full_disconnect(session):
+    addr = session.get('addr')
+    player_id = session.get('player_id')
+    server_id = session.get('server_id')
+    channel_index = session.get('channel_index')
+
+    channel_db_id = None
+    if server_id is not None and channel_index is not None:
+        channel_db_id = ChannelManager.get_channel_db_id(server_id, channel_index)
+    
+    lobby_name = None
+    if channel_db_id is not None and player_id:
+        lobby_name = LobbyManager.get_lobby_name_for_player(channel_db_id, player_id)
+
+    with sessions_lock:
+        session['removed'] = True
+        sessions.pop(addr, None)
+
+    sock = session.get('socket')
+    if sock:
+        try:
+            # Check if socket is still valid before shutdown
+            sock.setblocking(False)
+            sock.send(b'')  # Zero-byte send to check if still alive
+            sock.setblocking(True)
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError as e:
+            # Common when socket already closed or unreachable
+            print(f"[DISCONNECT] Socket shutdown error for {addr}: {e}")
+        finally:
+            try:
+                sock.close()
+            except Exception as e:
+                print(f"[DISCONNECT] Socket close error for {addr}: {e}")
+    else:
+        print(f"[DISCONNECT] No socket found for {addr}")
+    
+    print(f"[FORCED DISCONNECT] Closed session for {addr}")
+
+    # Kick from lobby if needed
+    if lobby_name and channel_db_id is not None:
+        removed_lobby, lobby_deleted = LobbyManager.remove_player_and_update_leader(player_id, channel_db_id)
+        if not lobby_deleted:
+            room_packet = build_lobby_room_packet(lobby_name, channel_db_id)
+            broadcast_to_lobby(lobby_name, channel_db_id, room_packet, note="[DISCONNECT ROOM UPDATE]")
+        else:
+            print(f"[DISCONNECT] Lobby '{lobby_name}' deleted after last player left.")
+
+# Background thread for periodic echo checks
+"""
+NOTE: Player and session cleanup is performed in both the client handler's 'finally' block (for immediate/clean disconnect)
+and in the echo watcher (for zombie/half-open sockets not reported as closed). This double layer is intentional for 
+reliability, to handle both explicit disconnects and network-level failures.
+"""
+
+@trace_calls
+def echo_watcher():
+    WATCHER_SLEEP_TIME = 1
+    ECHO_TIMEOUT = 5
+    ECHO_RESPONSE_WAIT = 5
+
+    while True:
+        now = time.time()
+        with sessions_lock:
+            active_sessions = list(sessions.values())
+
+        for session in active_sessions:
+            player_id = session.get('player_id')
+            if not player_id:
+                continue
+
+            # Step 1: Check last-packet time for all sessions (even non-3658)
+            with last_packet_lock:
+                last_time = last_packet_times.get(player_id, 0)
+
+            # Step 2: Only send echo to port 3658 sessions
+            if session['addr'][1] != CLIENT_GAMEPLAY_PORT:
+                continue
+
+            # Step 3: Skip if not idle
+            if now - last_time <= ECHO_TIMEOUT:
+                continue
+
+            # Step 4: Skip if echo already in progress
+            if session.get('echo_in_progress', False):
+                continue
+
+            # Step 5: Check socket health before echoing
+            if not is_session_socket_alive(session):
+                print(f"[ECHO CHECK] Socket dead for {player_id}, immediate kick.")
+                try:
+                    full_disconnect(session)
+                except Exception as e:
+                    print(f"[DISCONNECT ERROR] Exception during full_disconnect [is_session_socket_alive]: {e}")
+                continue
+
+            # Step 6: Mark echo in progress and start 
+            with sessions_lock:
+                session['echo_in_progress'] = True
+                echo_token = uuid.uuid4().hex
+                session['echo_reply_received'] = False
+                session['echo_token'] = echo_token
+
+            print(f"[ECHO CHECK] {player_id} idle for {int(now - last_time)}s, sending echo challenge...")
+
+            @trace_calls
+            def on_result(success, s=session, pid=player_id, token=echo_token):
+                with sessions_lock:
+                    if s.get('echo_token') != token:
+                        print(f"[ECHO ABORT] Echo token mismatch for {pid}, aborting kick.")
+                        return
+                    if success:
+                        print(f"[ECHO SUCCESS] {pid} replied successfully, no action needed.")
+                        return
+
+                print(f"[ECHO FAIL] {pid} did not reply, disconnecting.")
+                try:
+                    full_disconnect(s)
+                except Exception as e:
+                    print(f"[DISCONNECT ERROR] Exception during full_disconnect for {pid}: {e}")
+            
+            @trace_calls
+            def resend_echo_and_wait(s, pid, token):
+                try:
+                    for i in range(ECHO_RESPONSE_WAIT):
+                        if not is_session_socket_alive(s):
+                            print(f"[ECHO THREAD] Socket dead for {pid}, kicking immediately from echo thread.")
+                            on_result(False,s, pid, token)
+                            return
+                        if s.get('echo_token') != token:
+                            print(f"[ECHO THREAD] Token changed for {pid}, another echo thread is running or session replaced. Abort.")
+                            return
+                        try:
+                            send_echo_challenge(s, b"WAKE")
+                        except Exception as e:
+                            print(f"[ECHO ERROR] Failed to send echo to {pid}: {e}")
+                            on_result(False, s, pid, token)
+                            return
+                        time.sleep(1)
+                        if s.get('echo_reply_received'):
+                            print(f"[ECHO REPLY] {pid} replied on attempt {i+1}.")
+                            on_result(True, s, pid, token)
+                            return
+                    on_result(False,s, pid, token)
+                finally:
+                    s['echo_in_progress'] = False
+            
+            threading.Thread(
+                target=resend_echo_and_wait,
+                args=(session, player_id, echo_token),
+                daemon=True
+            ).start()
+
+        time.sleep(WATCHER_SLEEP_TIME)
+
+@trace_calls
+def update_last_packet_time(session):
+    player_id = session.get('player_id')
+    if player_id:
+        with last_packet_lock:
+            last_packet_times[player_id] = time.time()
+
 def broadcast_manual_packet(payload: bytes, note="MANUAL BROADCAST"):
     """
     Broadcast a manual packet to all currently connected sessions.
@@ -1808,6 +2115,7 @@ if __name__ == "__main__":
     # Start both servers (main and server, if used)
     threading.Thread(target=start_manager, args=(HOST,TCP_PORT,), daemon=True).start()
     threading.Thread(target=start_server, args=(SERVER,SERVER_PORT,), daemon=True).start()
+    threading.Thread(target=echo_watcher, daemon=True).start()
     # Start admin console in main thread (so Ctrl+C works as expected)
     time.sleep(1)
     admin_command_loop()
