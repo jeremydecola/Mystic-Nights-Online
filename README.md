@@ -17,7 +17,19 @@ TBD
 
 TBD
 
-## *PROGRESS*
+## *PROGRESS
+### 0.9.5
+* Solved regression with countdown and game start not working at all (still inconsistent)
+  * Segmented pre-countdown echo challenges from echo watcher. 
+  * Now pausing echo watcher during ready check and countdown.
+* Added more lobby error handling 
+* On init, we now clear all lobbies unless TestRoom is in their name.
+* MAJOR ISSUE: Despite my best attempts, 50% of the time, the client fails to react to the countdown/start packets. I tried:
+  * Staggered broadcast
+  * Increasing delay between packets.
+  * 2x, 3x send for redundancy. 
+* I will attempt to refactor the code into a singlethreaded design for simplicity's sake. I'll leave the multithreaded version semi-functional with this bug for those who are curious.
+  
 ### 0.9.4
 * Implemented watcher for disconnected player handling and implemented lobby HOST reassigment and lobby deletion conditions
 * When a player disconnects while in game with  0x03f1 packet , the server removes that player from the lobby. 

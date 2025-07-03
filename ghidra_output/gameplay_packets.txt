@@ -112,10 +112,3 @@ We should Increment the RANK of the player by 5 if VICTORY and increment by 2 if
 
 43434343000000000000000000 = player ID
 Indicates that the player is no longer in game, we should change their ready status to NOT READY and send a lobby room packet broadcast
-
-There are a few missing requirements in my code: 
-1) when a player disconnects while in game with  0x03f1 packet , the server should remove that player from the lobby. If they were the "leader" in that lobby, the leader should become the lowest player index in the remaining players. Example: player1 disconnects and their client sends a 0x03f1 packet. We clear player1_id, player1_character and player1_status from the lobby they were in if leader == player1_id, then leader = player2_id.
-2) when a player leaves a lobby while in queue with a 0x07da packet  the server should remove that player from the lobby. If they were the "leader" in that lobby, the leader should become the lowest player index in the remaining players. Example: player1 disconnects and their client sends a 0x07da packet. We clear player1_id, player1_character and player1_status from the lobby they were in if leader == player1_id, then leader = player2_id.
-3) if a player leaves a lobby and there are no more players to transfer leadership (leader) to , then the lobby is deleted from the database and that idx_in_channel becomes free to claim by the next created lobby
-
-4) when a Game Over 0x03f2 packet is received, we must also change the lobby's status to 1 (In Queue) instead of 2 (Started)
