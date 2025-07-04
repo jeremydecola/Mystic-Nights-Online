@@ -18,11 +18,19 @@ TBD
 TBD
 
 ## *PROGRESS
+### 0.9.6
+* Refactored all code for asyncio singlethreaded design
+* Fixed byte position of victory_flag for 0x3f3 packet
+* Potentially fixed major issue with countdown/game start not working half the time
+  * Sending a self-DC (0x3f4) packet before countdown seems to have greatly enhanced success rate.
+* Found bug with lobby indexing after lobby deletion. I think we might be accidentally reindexing lobbies. 
+
 ### 0.9.5
 * Solved regression with countdown and game start not working at all (still inconsistent)
   * Segmented pre-countdown echo challenges from echo watcher. 
   * Now pausing echo watcher during ready check and countdown.
-* Added more lobby error handling 
+* Added more lobby error handling.
+* Fixed Lobby Kick logic (regression)
 * On init, we now clear all lobbies unless TestRoom is in their name.
 * MAJOR ISSUE: Despite my best attempts, 50% of the time, the client fails to react to the countdown/start packets. I tried:
   * Staggered broadcast
