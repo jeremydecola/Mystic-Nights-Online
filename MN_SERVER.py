@@ -1384,6 +1384,11 @@ async def handle_client_packet(session, data):
             await broadcast_to_lobby(lobby_name, channel_db_id, room_packet, note="LOBBY ROOM UPDATE")
             #send_packet_to_client(session, room_packet, note="[LOBBY ROOM INFO]")
 
+    # --- Quick Join ---
+    elif pkt_id == 0x07d7:
+        ### NEEDS TO BE IMPLEMENTED - d7070d0041414141000000000000000000 (pkt_id=07d7, 13 bytes)
+        print("Get random available lobby.")
+
     # --- Game Start Request ---
     elif pkt_id == 0x07d8:
         if len(data) >= 8:
