@@ -10,7 +10,7 @@ import random
 import aioconsole
 
 print("-----------------------------------")
-print("Mystic Nights Private Server v0.9.6")
+print("Mystic Nights Private Server v0.9.7")
 print("-----------------------------------")
 
 # ========== CONFIG ==========
@@ -748,7 +748,7 @@ def build_lobby_join_ack(success=True, val=1):
     return header + payload
 
 # where val = lobby idx_in_channel if success
-def build_lobby_join_ack_2(success=True, val=1):
+def build_lobby_quick_join_ack(success=True, val=1):
     packet_id = 0x0bbf
     if success:
         flag = b'\x01\x00\x00\x00'
@@ -774,7 +774,8 @@ async def build_lobby_list_packet(server_id, channel_index):
     packet_id = 0xbc8
     flag = b'\x01\x00\x00\x00'
     entry_struct = '<III16s1s12s1sB1s'
-    lobbies = []
+    max_lobbies = 20
+    entries = [None] * max_lobbies
 
     channel_db_id = await ChannelManager.get_channel_db_id(server_id, channel_index)
     rows = []
@@ -782,7 +783,7 @@ async def build_lobby_list_packet(server_id, channel_index):
         rows = await LobbyManager.get_lobbies_for_channel(channel_db_id)
 
     for lobby in rows:
-        idx_in_channel = lobby.idx_in_channel
+        idx = lobby.idx_in_channel
         player_count = lobby.player_count
         name = lobby.name
         password = lobby.password
@@ -793,22 +794,23 @@ async def build_lobby_list_packet(server_id, channel_index):
         pw_enc = (password or '').encode('euc-kr', errors='replace')[:12].ljust(12, b'\x00')
         pad2 = b'\x00'
         pad3 = b'\x00'
-        packed = struct.pack(entry_struct, idx_in_channel, player_count, max_players, name_enc, pad1, pw_enc, pad2, status, pad3)
-        lobbies.append(packed)
+        packed = struct.pack(entry_struct, idx, player_count, max_players, name_enc, pad1, pw_enc, pad2, status, pad3)
+        if 0 <= idx < max_lobbies:
+            entries[idx] = packed
 
-    # Pad to 20 entries if needed
-    while len(lobbies) < 20:
-        idx = len(lobbies)
-        name = f"Lobby{idx+1}".encode('euc-kr')[:16].ljust(16, b'\x00')
-        pad1 = b'\x00'
-        pw_enc = b"".ljust(12, b'\x00')
-        pad2 = b'\x00'
-        status = 0
-        pad3 = b'\x00'
-        packed = struct.pack(entry_struct, idx, 0, 4, name, pad1, pw_enc, pad2, status, pad3)
-        lobbies.append(packed)
+    # Fill unused slots
+    for idx in range(max_lobbies):
+        if entries[idx] is None:
+            name = f"Lobby{idx+1}".encode('euc-kr')[:16].ljust(16, b'\x00')
+            pad1 = b'\x00'
+            pw_enc = b"".ljust(12, b'\x00')
+            pad2 = b'\x00'
+            status = 0
+            pad3 = b'\x00'
+            packed = struct.pack(entry_struct, idx, 0, 4, name, pad1, pw_enc, pad2, status, pad3)
+            entries[idx] = packed
 
-    payload = flag + b''.join(lobbies)
+    payload = flag + b''.join(entries)
     header = struct.pack('<HH', packet_id, len(payload))
     if DEBUG:
         await LobbyManager.print_lobby_table(channel_db_id)
@@ -1337,6 +1339,11 @@ async def handle_client_packet(session, data):
         success = False
         val = 1  # Default (idx)
 
+        # --- QUICK JOIN HANDLING ---
+        if session.pop('quick_join_pending', False):
+            print(f"[LOBBY JOIN][QUICK JOIN] Ignoring FIRST 0x07d6 after quick join for {player_id}")
+            return
+
         if channel_db_id is None or player is None:
             print(f"[ERROR] Invalid channel or player missing. server_id={server_id}, channel_index={channel_index}, player={player_id}")
             val = 0x05  # Invalid parameter
@@ -1386,8 +1393,55 @@ async def handle_client_packet(session, data):
 
     # --- Quick Join ---
     elif pkt_id == 0x07d7:
-        ### NEEDS TO BE IMPLEMENTED - d7070d0041414141000000000000000000 (pkt_id=07d7, 13 bytes)
-        print("Get random available lobby.")
+        if len(data) < 13:
+            print("[QUICK JOIN] Malformed 0x07d7 packet (too short)")
+            response = build_lobby_quick_join_ack(success=False, val=1)
+            await send_packet_to_client(session, response, note="[QUICK JOIN FAIL]")
+            return
+
+        player_id = data[4:12].decode('ascii').rstrip('\x00')
+        print(f"[QUICK JOIN] Request from player_id={player_id}")
+
+        server_id = session.get('server_id')
+        channel_index = session.get('channel_index')
+        if server_id is None or channel_index is None:
+            print("[QUICK JOIN] Missing server or channel info in session.")
+            response = build_lobby_quick_join_ack(success=False, val=5)
+            await send_packet_to_client(session, response, note="[QUICK JOIN FAIL]")
+            return
+
+        channel_db_id = await ChannelManager.get_channel_db_id(server_id, channel_index)
+        if channel_db_id is None:
+            print("[QUICK JOIN] Invalid channel_db_id.")
+            response = build_lobby_quick_join_ack(success=False, val=5)
+            await send_packet_to_client(session, response, note="[QUICK JOIN FAIL]")
+            return
+
+        # Get all lobbies in the channel
+        lobbies = await LobbyManager.get_lobbies_for_channel(channel_db_id)
+        # Filter: public, not full, status == 1 (waiting)
+        available = [
+            lobby for lobby in lobbies
+            if not lobby.password  # public
+            and lobby.player_count < 4
+            and lobby.status == 1  # waiting for players
+        ]
+        print(f"[QUICK JOIN] {len(available)} public, not full lobbies found.")
+
+        if not available:
+            # No lobbies available
+            response = build_lobby_quick_join_ack(success=False, val=0x0d)
+            await send_packet_to_client(session, response, note="[QUICK JOIN NO LOBBY]")
+            return
+
+        # Pick a random lobby
+        lobby = random.choice(available)
+        lobby_name = lobby.name
+
+        print(f"[QUICK JOIN] Player {player_id} request to join lobby '{lobby_name}' (idx {lobby.idx_in_channel})")
+        session['quick_join_pending'] = True # Session flag for subsequent lobby join
+        response = build_lobby_quick_join_ack(success=True, val=lobby.idx_in_channel)
+        await send_packet_to_client(session, response, note="[QUICK JOIN SUCCESS]")
 
     # --- Game Start Request ---
     elif pkt_id == 0x07d8:

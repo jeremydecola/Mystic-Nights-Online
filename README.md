@@ -18,6 +18,11 @@ TBD
 TBD
 
 ## *PROGRESS
+### 0.9.7
+* Implemented 0x7d7 Lobby Quick Join packet handler
+  * Using session flag to ignore first 0x7d6 packet received after Quick Join ack to avoid joining the wrong lobby/errors
+* Corrected Lobby List packet so that we actually use the static idx_in_channel of each lobby to index them
+
 ### 0.9.6
 * Refactored all code for asyncio singlethreaded design
 * Fixed byte position of victory_flag for 0x3f3 packet
