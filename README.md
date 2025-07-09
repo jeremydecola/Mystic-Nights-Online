@@ -18,6 +18,12 @@ TBD
 TBD
 
 ## *PROGRESS
+### 0.9.9
+* Implemented SQLite support (now supports both POSTGRESQL and SQLite backends)
+* Patched MACRO character limit to 42 instead of 20 characters.
+  * Monitor for regressions...
+  * 001175A8 (00217528) 0x15 (21) changed to 0x2B (43)
+
 ### 0.9.8
 * Not broadcasting 0x139c to self to avoid duplicate Player X Detected Near Incident events causing an extra increase in suspicion meter.
 * No longer sending lobby room update at the end of Game Start packet handler

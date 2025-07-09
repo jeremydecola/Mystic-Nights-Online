@@ -3,14 +3,17 @@ import struct
 import logging
 import uuid
 import os
+import re
 import functools
 import time
 import asyncpg
+import aiosqlite
+import sqlite3
 import random
 import aioconsole
 
 print("-----------------------------------")
-print("Mystic Nights Private Server v0.9.8")
+print("Mystic Nights Private Server v0.9.9")
 print("-----------------------------------")
 
 # ========== CONFIG ==========
@@ -34,6 +37,8 @@ sessions_lock = asyncio.Lock()
 lobby_echo_lock = asyncio.Lock()
 last_packet_lock = asyncio.Lock()
 lobby_ready_lock = asyncio.Lock()
+
+dbtype = os.environ.get("DB_TYPE", "sqlite")   # "postgres" or "sqlite"
 
 if DEBUG == 2:
     # Clear the trace log on each script run
@@ -81,46 +86,130 @@ def trace_calls(func):
         return sync_wrapper
 
 # ========= CLASSES ==========
-class DBManager:
-    _instance = None
 
-    def __init__(self, dsn):
-        self.dsn = dsn
-        self.pool = None
+class DBBase:
+    async def connect(self): pass
+    async def fetch(self, query, *args): pass
+    async def fetchrow(self, query, *args): pass
+    async def execute(self, query, *args): pass
+    async def close(self): pass
 
-    @classmethod
-    async def init(cls, dsn):
-        """Initialize the global DBManager singleton and connect the pool."""
-        cls._instance = DBManager(dsn)
-        await cls._instance.connect()
+class PostgresDB(DBBase):
+    def __init__(self, dsn): self.dsn = dsn; self.pool = None
+    async def connect(self): self.pool = await asyncpg.create_pool(dsn=self.dsn)
+    async def fetch(self, query, *args):
+        async with self.pool.acquire() as conn:
+            return await conn.fetch(query, *args)
+    async def fetchrow(self, query, *args):
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(query, *args)
+    async def execute(self, query, *args):
+        async with self.pool.acquire() as conn:
+            return await conn.execute(query, *args)
+    async def close(self):
+        if self.pool: await self.pool.close()
+
+class SQLiteDB:
+    def __init__(self, db_file="mysticnights.db", schema_file="mn_sqlite_schema.sql"):
+        self.db_file = db_file
+        self.schema_file = schema_file
+        self.conn = None
+
+    @staticmethod
+    def _rewrite_query(query):
+        """
+        Rewrite $1, $2... to '?' for SQLite parameter substitution.
+        """
+        return re.sub(r'\$\d+', '?', query)
 
     async def connect(self):
-        self.pool = await asyncpg.create_pool(dsn=self.dsn)
+        """
+        Open the database connection. Should only be called once.
+        """
+        self.conn = await aiosqlite.connect(self.db_file)
+        # Row factory gives dict-like rows for easier coding
+        self.conn.row_factory = aiosqlite.Row
+    
+    async def fetch(self, query, *args):
+        query = self._rewrite_query(query)
+        async with self.conn.execute(query, (*args,)) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def fetchrow(self, query, *args):
+        query = self._rewrite_query(query)
+        async with self.conn.execute(query, (*args,)) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def execute(self, query, *args):
+        query = self._rewrite_query(query)
+        async with self.conn.execute(query, (*args,)) as cursor:
+            await self.conn.commit()
+            return cursor.rowcount
+
+    async def close(self):
+        if self.conn:
+            await self.conn.close()
+            self.conn = None
+
+    def create_db_if_missing(self):
+        """
+        Create the database and run schema SQL if the file doesn't exist.
+        This is a synchronous operation and should be done before opening with aiosqlite.
+        """
+        if os.path.exists(self.db_file):
+            return
+        if not os.path.exists(self.schema_file):
+            raise FileNotFoundError(f"Schema file not found: {self.schema_file}")
+        with open(self.schema_file, "r", encoding="utf-8") as f:
+            schema_sql = f.read()
+        with sqlite3.connect(self.db_file) as conn:
+            conn.executescript(schema_sql)
+
+    @classmethod
+    async def init(cls, db_file="mysticnights.db", schema_file="mn_sqlite_schema.sql"):
+        """
+        Factory method to create and initialize the DB if needed.
+        """
+        self = cls(db_file, schema_file)
+        self.create_db_if_missing()
+        await self.connect()
+        return self
+
+class DBManager:
+    _instance = None
+    _backend = None
+
+    @classmethod
+    async def init(cls, dsn=None, dbtype="postgres", sqlite_file=None, schema_file="mn_sqlite_schema.sql"):
+        if dbtype == "postgres":
+            cls._backend = PostgresDB(dsn)
+            await cls._backend.connect()
+        elif dbtype == "sqlite":
+            # Use SQLiteDB.init so schema gets created if missing
+            cls._backend = await SQLiteDB.init(db_file=sqlite_file or "mysticnights.db", schema_file=schema_file)
+        else:
+            raise ValueError(f"Unknown dbtype: {dbtype}")
+        cls._instance = cls._backend
 
     @classmethod
     def instance(cls):
-        """Return the singleton instance. Raises if not initialized."""
-        if not cls._instance:
-            raise Exception("DBManager is not initialized. Call await DBManager.init(dsn) first.")
+        if not cls._instance: raise Exception("DBManager is not initialized.")
         return cls._instance
 
     @classmethod
     async def fetch(cls, query, *args):
-        inst = cls.instance()
-        async with inst.pool.acquire() as conn:
-            return await conn.fetch(query, *args)
-
+        return await cls._instance.fetch(query, *args)
     @classmethod
     async def fetchrow(cls, query, *args):
-        inst = cls.instance()
-        async with inst.pool.acquire() as conn:
-            return await conn.fetchrow(query, *args)
-
+        return await cls._instance.fetchrow(query, *args)
     @classmethod
     async def execute(cls, query, *args):
-        inst = cls.instance()
-        async with inst.pool.acquire() as conn:
-            return await conn.execute(query, *args)
+        return await cls._instance.execute(query, *args)
+    @classmethod
+    async def close(cls):
+        await cls._instance.close()
 
 class Server:
     def __init__(self, id, name, ip_address, player_count=0, availability=0):
@@ -132,12 +221,23 @@ class Server:
 
     @classmethod
     def from_row(cls, row):
-        # Accepts asyncpg.Record or tuple, both support index access.
-        return cls(row[0], row[1], row[2], row[3], row[4])
+        # Works for dict/Row/asyncpg.Record, else fallback to tuple
+        try:
+            return cls(
+                row['id'],
+                row['name'],
+                row['ip_address'],
+                row['player_count'],
+                row['availability']
+            )
+        except (KeyError, TypeError):
+            # fallback: tuple or list
+            return cls(row[0], row[1], row[2], row[3], row[4])
 
 class ServerManager:
     @classmethod
     async def get_server_by_ip(cls, ip_address):
+        print("get_server_by_ip:", repr(ip_address), type(ip_address))
         row = await DBManager.fetchrow(
             "SELECT id, name, ip_address, player_count, availability FROM servers WHERE ip_address = $1",
             ip_address
@@ -170,14 +270,18 @@ class ServerManager:
 
     @classmethod
     async def init_server(cls):
-        # On initial startup, remove all lobbies whose name does NOT contain 'TestRoom' (case-sensitive).
-        result = await DBManager.execute(
-            "DELETE FROM lobbies WHERE name NOT LIKE $1", '%TestRoom%'
-        )
-        # asyncpg's .execute() returns 'DELETE X' where X is the number deleted
-        try:
-            deleted = int(result.split(' ')[1])
-        except Exception:
+        # On initial startup, remove all lobbies whose name does NOT contain 'Test' (case-sensitive).
+        result = await DBManager.execute("DELETE FROM lobbies WHERE name NOT LIKE $1", '%Test%')
+
+        # Support both asyncpg ("DELETE N") and aiosqlite (int rowcount)
+        if isinstance(result, int):
+            deleted = result
+        elif isinstance(result, str) and result.startswith("DELETE "):
+            try:
+                deleted = int(result.split(" ")[1])
+            except Exception:
+                deleted = '?'
+        else:
             deleted = '?'
         print(f"[INIT] Cleared {deleted} non-TestRoom lobbies from database.")
 
@@ -273,18 +377,24 @@ class PlayerManager:
 
     @classmethod
     async def create_player(cls, player_id, password, rank=1):
-        query = """
-            INSERT INTO players (player_id, password, rank) 
-            VALUES ($1, $2, $3)
-            RETURNING id, player_id, password, rank, created_at
-        """
-        try:
+        if dbtype == "postgres":
+            query = """
+                INSERT INTO players (player_id, password, rank) 
+                VALUES ($1, $2, $3)
+                RETURNING id, player_id, password, rank, created_at
+            """
             row = await DBManager.fetchrow(query, player_id, password, rank)
-            if row:
-                return Player.from_row(row)
-        except Exception as e:
-            # Optionally log error here (e.g. UniqueViolation)
-            return None
+        else:  # Assume SQLite
+            insert_query = """
+                INSERT INTO players (player_id, password, rank) 
+                VALUES (?, ?, ?)
+            """
+            await DBManager.execute(insert_query, player_id, password, rank)
+            # Now get the last inserted row (SQLite only)
+            query = "SELECT id, player_id, password, rank, created_at FROM players WHERE player_id = ?"
+            row = await DBManager.fetchrow(query, player_id)
+        if row:
+            return Player.from_row(row)
         return None
 
     @classmethod
@@ -299,12 +409,20 @@ class PlayerManager:
 
     @classmethod
     async def add_rank_points(cls, player_id, points, max_rank=199):
-        query = """
-            UPDATE players 
-            SET rank = LEAST(rank + $1, $2)
-            WHERE player_id = $3
-        """
-        await DBManager.execute(query, points, max_rank, player_id)
+        if dbtype == "postgres":
+            query = """
+                UPDATE players 
+                SET rank = LEAST(rank + $1, $2)
+                WHERE player_id = $3
+            """
+            await DBManager.execute(query, points, max_rank, player_id)
+        else:  # SQLite
+            query = """
+                UPDATE players 
+                SET rank = MIN(rank + ?, ?)
+                WHERE player_id = ?
+            """
+            await DBManager.execute(query, points, max_rank, player_id)
 
 class ChannelManager:
     @classmethod
@@ -362,10 +480,12 @@ class ChannelManager:
 
     @classmethod
     async def decrement_player_count(cls, server_id, channel_index):
-        await DBManager.execute(
-            "UPDATE channels SET player_count = GREATEST(player_count - 1, 0) WHERE server_id = $1 AND channel_index = $2;",
-            server_id, channel_index
-        )
+        if dbtype == "postgres":
+            query = "UPDATE channels SET player_count = GREATEST(player_count - 1, 0) WHERE server_id = $1 AND channel_index = $2;"
+        else:  # SQLite
+            query = "UPDATE channels SET player_count = MAX(player_count - 1, 0) WHERE server_id = ? AND channel_index = ?;"
+        await DBManager.execute(query, server_id, channel_index)
+
 
 class LobbyManager:
     @classmethod
@@ -421,12 +541,20 @@ class LobbyManager:
 
     @classmethod
     async def get_lobby_name_for_player(cls, channel_db_id, player_id):
-        row = await DBManager.fetchrow(
-            """SELECT name FROM lobbies
-               WHERE channel_id=$1 AND
-               (player1_id=$2 OR player2_id=$2 OR player3_id=$2 OR player4_id=$2)""",
-            channel_db_id, player_id
-        )
+        if dbtype == "postgres":
+            row = await DBManager.fetchrow(
+                """SELECT name FROM lobbies
+                   WHERE channel_id=$1 AND
+                   (player1_id=$2 OR player2_id=$2 OR player3_id=$2 OR player4_id=$2)""",
+                channel_db_id, player_id
+            )
+        else: # sqlite
+            row = await DBManager.fetchrow(
+                """SELECT name FROM lobbies
+                   WHERE channel_id=? AND
+                   (player1_id=? OR player2_id=? OR player3_id=? OR player4_id=?)""",
+                channel_db_id, player_id, player_id, player_id, player_id
+            )
         return row['name'] if row else None
 
     @classmethod
@@ -483,12 +611,22 @@ class LobbyManager:
     @classmethod
     async def remove_player_from_lobby_db(cls, player_id, channel_db_id=None):
         if channel_db_id is not None:
-            row = await DBManager.fetchrow("""
-                SELECT id, idx_in_channel, player1_id, player2_id, player3_id, player4_id
-                FROM lobbies
-                WHERE channel_id = $1 AND ($2 = ANY(ARRAY[player1_id, player2_id, player3_id, player4_id]))
-            """, channel_db_id, player_id)
+            if dbtype == "postgres":
+                row = await DBManager.fetchrow("""
+                    SELECT id, idx_in_channel, player1_id, player2_id, player3_id, player4_id
+                    FROM lobbies
+                    WHERE channel_id = $1
+                      AND ($2 = ANY(ARRAY[player1_id, player2_id, player3_id, player4_id]))
+                """, channel_db_id, player_id)
+            else:  # SQLite
+                row = await DBManager.fetchrow("""
+                    SELECT id, idx_in_channel, player1_id, player2_id, player3_id, player4_id
+                    FROM lobbies
+                    WHERE channel_id = ?
+                      AND (player1_id = ? OR player2_id = ? OR player3_id = ? OR player4_id = ?)
+                """, channel_db_id, player_id, player_id, player_id, player_id)
         else:
+            # This query works on both backends since it doesn't use ANY/ARRAY
             row = await DBManager.fetchrow("""
                 SELECT id, idx_in_channel, player1_id, player2_id, player3_id, player4_id
                 FROM lobbies
@@ -502,15 +640,26 @@ class LobbyManager:
         )
         for idx, slot in enumerate([p1, p2, p3, p4], 1):
             if slot == player_id:
-                await DBManager.execute(
-                    f"""UPDATE lobbies
-                        SET player{idx}_id = NULL,
-                            player{idx}_character = NULL,
-                            player{idx}_status = NULL,
-                            player_count = GREATEST(player_count - 1, 0)
-                        WHERE id = $1
-                    """, lobby_id
-                )
+                if dbtype == "postgres":
+                    await DBManager.execute(
+                        f"""UPDATE lobbies
+                            SET player{idx}_id = NULL,
+                                player{idx}_character = NULL,
+                                player{idx}_status = NULL,
+                                player_count = GREATEST(player_count - 1, 0)
+                            WHERE id = $1
+                        """, lobby_id
+                    )
+                else: # sqlite
+                    await DBManager.execute(
+                        f"""UPDATE lobbies
+                            SET player{idx}_id = NULL,
+                                player{idx}_character = NULL,
+                                player{idx}_status = NULL,
+                                player_count = MAX(player_count - 1, 0)
+                            WHERE id = ?
+                        """, lobby_id
+                    )
                 print(f"[DB] Removed player {player_id} from lobby (idx {idx_in_channel}).")
                 return True
         return False
@@ -518,12 +667,21 @@ class LobbyManager:
     @classmethod
     async def remove_player_and_update_leader(cls, player_id, channel_db_id):
         # NOTE: thread locking must be done outside this method for asyncio!
-        row = await DBManager.fetchrow("""
-            SELECT id, name, leader,
-                   player1_id, player2_id, player3_id, player4_id
-            FROM lobbies
-            WHERE channel_id = $1 AND ($2 = ANY(ARRAY[player1_id, player2_id, player3_id, player4_id]))
-        """, channel_db_id, player_id)
+        if dbtype == "postgres":
+            row = await DBManager.fetchrow("""
+                SELECT id, name, leader,
+                       player1_id, player2_id, player3_id, player4_id
+                FROM lobbies
+                WHERE channel_id = $1 AND ($2 = ANY(ARRAY[player1_id, player2_id, player3_id, player4_id]))
+            """, channel_db_id, player_id)
+        else: #sqlite
+            row = await DBManager.fetchrow("""
+                SELECT id, name, leader,
+                       player1_id, player2_id, player3_id, player4_id
+                FROM lobbies
+                WHERE channel_id = ? AND
+                    (? = player1_id OR ? = player2_id OR ? = player3_id OR ? = player4_id)
+            """, channel_db_id, player_id, player_id, player_id, player_id)
         if not row:
             return (None, False)
         lobby_id, lobby_name, leader, p1, p2, p3, p4 = (
@@ -534,15 +692,26 @@ class LobbyManager:
         cleared = False
         for idx, pid in enumerate(player_slots, 1):
             if pid == player_id:
-                await DBManager.execute(
-                    f"""UPDATE lobbies
-                        SET player{idx}_id = NULL,
-                            player{idx}_character = NULL,
-                            player{idx}_status = NULL,
-                            player_count = GREATEST(player_count - 1, 0)
-                        WHERE id = $1
-                    """, lobby_id
-                )
+                if dbtype == "postgres":
+                    await DBManager.execute(
+                        f"""UPDATE lobbies
+                            SET player{idx}_id = NULL,
+                                player{idx}_character = NULL,
+                                player{idx}_status = NULL,
+                                player_count = GREATEST(player_count - 1, 0)
+                            WHERE id = $1
+                        """, lobby_id
+                    )
+                else: # sqlite
+                    await DBManager.execute(
+                        f"""UPDATE lobbies
+                            SET player{idx}_id = NULL,
+                                player{idx}_character = NULL,
+                                player{idx}_status = NULL,
+                                player_count = MAX(player_count - 1, 0)
+                            WHERE id = ?
+                        """, lobby_id
+                    )
                 cleared = True
         if not cleared:
             return (None, False)
@@ -600,14 +769,24 @@ class LobbyManager:
 
     @classmethod
     async def set_player_not_ready(cls, player_id, channel_db_id, lobby_name):
-        await DBManager.execute("""
-            UPDATE lobbies
-            SET player1_status = CASE WHEN player1_id=$1 THEN 0 ELSE player1_status END,
-                player2_status = CASE WHEN player2_id=$1 THEN 0 ELSE player2_status END,
-                player3_status = CASE WHEN player3_id=$1 THEN 0 ELSE player3_status END,
-                player4_status = CASE WHEN player4_id=$1 THEN 0 ELSE player4_status END
-            WHERE name = $2 AND channel_id = $3
-        """, player_id, lobby_name, channel_db_id)
+        if dbtype == "postgres":
+            await DBManager.execute("""
+                UPDATE lobbies
+                SET player1_status = CASE WHEN player1_id=$1 THEN 0 ELSE player1_status END,
+                    player2_status = CASE WHEN player2_id=$1 THEN 0 ELSE player2_status END,
+                    player3_status = CASE WHEN player3_id=$1 THEN 0 ELSE player3_status END,
+                    player4_status = CASE WHEN player4_id=$1 THEN 0 ELSE player4_status END
+                WHERE name = $2 AND channel_id = $3
+            """, player_id, lobby_name, channel_db_id)
+        else: #sqlite
+            await DBManager.execute("""
+                UPDATE lobbies
+                SET player1_status = CASE WHEN player1_id = ? THEN 0 ELSE player1_status END,
+                    player2_status = CASE WHEN player2_id = ? THEN 0 ELSE player2_status END,
+                    player3_status = CASE WHEN player3_id = ? THEN 0 ELSE player3_status END,
+                    player4_status = CASE WHEN player4_id = ? THEN 0 ELSE player4_status END
+                WHERE name = ? AND channel_id = ?
+            """, player_id, player_id, player_id, player_id, lobby_name, channel_db_id)
 
     @classmethod
     async def set_lobby_status(cls, channel_db_id, lobby_name, status):
@@ -2129,8 +2308,13 @@ def is_session_socket_alive(session):
 
 async def main():
     # Init DB
-    dsn = get_postgres_dsn()
-    await DBManager.init(dsn)  # Or wherever you store your DSN
+    if dbtype == "postgres":
+        dsn = get_postgres_dsn()
+        await DBManager.init(dsn=dsn, dbtype="postgres")
+    else:
+        sqlite_file = os.environ.get("SQLITE_FILE", "mysticnights.db")
+        schema_file = os.environ.get("SQLITE_SCHEMA", "mn_sqlite_schema.sql")
+        await DBManager.init(dbtype="sqlite", sqlite_file=sqlite_file, schema_file=schema_file)
     # Clear orphaned lobbies (async now!)
     await ServerManager.init_server()
     # Start both servers
