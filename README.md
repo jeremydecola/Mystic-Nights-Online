@@ -18,6 +18,12 @@ TBD
 TBD
 
 ## *PROGRESS
+### 0.9.8
+* Not broadcasting 0x139c to self to avoid duplicate Player X Detected Near Incident events causing an extra increase in suspicion meter.
+* No longer sending lobby room update at the end of Game Start packet handler
+* Moved quick_join_pending flag to fix subsequent Lobby Join after Quick Join error causing an erroneous error.
+* Modified start_server and main() so that Listening on Port X... messages print before the ADMIN console.
+
 ### 0.9.7
 * Implemented 0x7d7 Lobby Quick Join packet handler
   * Using session flag to ignore first 0x7d6 packet received after Quick Join ack to avoid joining the wrong lobby/errors

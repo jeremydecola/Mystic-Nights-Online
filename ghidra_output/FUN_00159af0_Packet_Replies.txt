@@ -44,8 +44,8 @@ FUN_00208cc0
 	0x3f4 - Player Status (DC)
 	0x3f1 - Player/Traitor has lost connection / abandonned game
 	0x139d - Send Macro
-	0x139c
-	0x139b
+	0x139c # PLAYER DETECTED NEAR INCIDENT LOCATION
+	0x139b # PLAYER WAS THE FIRST TO FIND THE CORPSE
 	0x139a # Some kind of alert that popped open the minimap - i triggered it with 1399
 	0x1399 # Vampire Transformation sendhex 9913040303000000
 	0x1398

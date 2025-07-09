@@ -10,7 +10,7 @@ import random
 import aioconsole
 
 print("-----------------------------------")
-print("Mystic Nights Private Server v0.9.7")
+print("Mystic Nights Private Server v0.9.8")
 print("-----------------------------------")
 
 # ========== CONFIG ==========
@@ -1398,7 +1398,8 @@ async def handle_client_packet(session, data):
             response = build_lobby_quick_join_ack(success=False, val=1)
             await send_packet_to_client(session, response, note="[QUICK JOIN FAIL]")
             return
-
+        
+        session['quick_join_pending'] = True # Session flag for subsequent lobby join
         player_id = data[4:12].decode('ascii').rstrip('\x00')
         print(f"[QUICK JOIN] Request from player_id={player_id}")
 
@@ -1439,7 +1440,6 @@ async def handle_client_packet(session, data):
         lobby_name = lobby.name
 
         print(f"[QUICK JOIN] Player {player_id} request to join lobby '{lobby_name}' (idx {lobby.idx_in_channel})")
-        session['quick_join_pending'] = True # Session flag for subsequent lobby join
         response = build_lobby_quick_join_ack(success=True, val=lobby.idx_in_channel)
         await send_packet_to_client(session, response, note="[QUICK JOIN SUCCESS]")
 
@@ -1459,10 +1459,7 @@ async def handle_client_packet(session, data):
 
                 bc0_response = await build_game_start_ack(lobby_name, channel_db_id)
                 await broadcast_to_lobby(lobby_name, channel_db_id, bc0_response, note="[GAME START ACK]")
-
-                # send updated lobby room packet:
-                room_packet = await build_lobby_room_packet(lobby_name, channel_db_id)
-                await broadcast_to_lobby(lobby_name, channel_db_id, room_packet, note="LOBBY ROOM UPDATE")
+                
         else:
             print(f"[ERROR] Malformed 0x07d8 packet (len={len(data)})")
             # lobby_name/channel_db_id may not be defined here, so guard against that
@@ -1864,7 +1861,10 @@ async def handle_client_packet(session, data):
         
         # Broadcast to all players in the lobby
         if lobby_name and channel_db_id is not None:
-            await broadcast_to_lobby(lobby_name, channel_db_id, data, note=f"[GAMEPLAY BROADCAST {pkt_id:04x}]")
+            if pkt_id == 0x139c: # Don't self-broadcast Incident Proximity Detection
+                await broadcast_to_lobby(lobby_name, channel_db_id, data, note=f"[DETECTION EVENT {pkt_id:04x}]", cur_session=session, to_self = False)                
+            else:
+                await broadcast_to_lobby(lobby_name, channel_db_id, data, note=f"[GAMEPLAY BROADCAST {pkt_id:04x}]")
         else:
             print(f"[{pkt_id:04x}] WARNING: Could not find lobby/channel for broadcast for {player_id}")
 
@@ -1920,14 +1920,8 @@ async def start_server(host, listen_port):
         lambda r, w: handle_client(r, w, listen_port),
         host, listen_port
     )
-    print(f"[SERVER] LISTENING on {host}:{listen_port}\n")
-    async with server:
-        await server.serve_forever()
-
-async def start_manager(host, listen_port):
-    # For "manager" port -- you can reuse the handler or specialize as needed
-    await start_server(host, listen_port)
-
+    print(f"[SERVER] LISTENING on {host}:{listen_port}")
+    return server
 
 async def full_disconnect(session):
     if session.get('removed'):
@@ -2140,10 +2134,12 @@ async def main():
     # Clear orphaned lobbies (async now!)
     await ServerManager.init_server()
     # Start both servers
+    manager_server = await start_server(HOST, TCP_PORT)
+    gameplay_server = await start_server(HOST, SERVER_PORT)    
     # Manager/Admin
-    asyncio.create_task(start_manager(HOST, TCP_PORT))
+    asyncio.create_task(manager_server.serve_forever())
     # Gameplay/Server
-    asyncio.create_task(start_server(HOST, SERVER_PORT))
+    asyncio.create_task(gameplay_server.serve_forever())
     # Echo Watcher
     asyncio.create_task(echo_watcher())
     # Optionally start admin command loop
