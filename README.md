@@ -18,6 +18,12 @@ TBD
 TBD
 
 ## *PROGRESS
+### 0.9.10
+* Implemented Channel and Server player count tracking
+  * Server player count decrementing not working if client disconnects/resets before joining a Channel.
+* Now assigning leader on lobby join if no leader is set (abnormal edge case)
+* Now using ORDER ASC in SQL querries to avoid Servers and Channels unpredictably changing order (occured on Server player count increment)
+
 ### 0.9.9
 * Implemented SQLite support (now supports both POSTGRESQL and SQLite backends)
 * Patched MACRO character limit to 42 instead of 20 characters.

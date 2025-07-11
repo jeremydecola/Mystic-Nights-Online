@@ -12,9 +12,9 @@ import sqlite3
 import random
 import aioconsole
 
-print("-----------------------------------")
-print("Mystic Nights Private Server v0.9.9")
-print("-----------------------------------")
+print("------------------------------------")
+print("Mystic Nights Private Server v0.9.10")
+print("------------------------------------")
 
 # ========== CONFIG ==========
 
@@ -38,7 +38,7 @@ lobby_echo_lock = asyncio.Lock()
 last_packet_lock = asyncio.Lock()
 lobby_ready_lock = asyncio.Lock()
 
-dbtype = os.environ.get("DB_TYPE", "sqlite")   # "postgres" or "sqlite"
+dbtype = os.environ.get("DB_TYPE", "postgres")   # "postgres" or "sqlite"
 
 if DEBUG == 2:
     # Clear the trace log on each script run
@@ -252,7 +252,7 @@ class ServerManager:
     @classmethod
     async def get_servers(cls):
         rows = await DBManager.fetch(
-            "SELECT id, name, ip_address, player_count, availability FROM servers"
+            "SELECT id, name, ip_address, player_count, availability FROM servers ORDER BY id ASC"
         )
         return [Server.from_row(row) for row in rows]
 
@@ -267,11 +267,55 @@ class ServerManager:
             status_str = status_map.get(s.availability, str(s.availability))
             print("{:<4} {:<16} {:<20} {:<10}".format(idx, s.name, s.ip_address, status_str))
         print("-" * 60)
+    
+    @classmethod
+    async def increment_player_count(cls, server_id):
+        await DBManager.execute("""
+            UPDATE servers 
+            SET player_count = player_count + 1,
+                availability = CASE 
+                    WHEN player_count + 1 >= 640 THEN 2
+                    WHEN player_count + 1 >= 320 THEN 1
+                    ELSE 0
+                END
+            WHERE id = $1
+        """, server_id)
+    
+    @classmethod
+    async def decrement_player_count(cls, server_id):
+        if dbtype == "postgres":
+            await DBManager.execute("""
+                UPDATE servers 
+                SET player_count = GREATEST(player_count - 1, 0),
+                    availability = CASE 
+                        WHEN GREATEST(player_count - 1, 0) >= 640 THEN 2
+                        WHEN GREATEST(player_count - 1, 0) >= 320 THEN 1
+                        ELSE 0
+                    END
+                WHERE id = $1
+            """, server_id)
+        else: # sqlite
+            await DBManager.execute("""
+                UPDATE servers 
+                SET player_count = MAX(player_count - 1, 0),
+                    availability = CASE 
+                        WHEN MAX(player_count - 1, 0) >= 640 THEN 2
+                        WHEN MAX(player_count - 1, 0) >= 320 THEN 1
+                        ELSE 0
+                    END
+                WHERE id = ?
+            """, server_id)
 
     @classmethod
     async def init_server(cls):
         # On initial startup, remove all lobbies whose name does NOT contain 'Test' (case-sensitive).
         result = await DBManager.execute("DELETE FROM lobbies WHERE name NOT LIKE $1", '%Test%')
+        # Reset all server and channel player counts to 0
+        # For a production server manager, we would reset player count and set availability with a watchdog or ping reply
+        #await DBManager.execute("UPDATE servers SET player_count = 0, availability = 0")
+        # We are only supporting MN0 so we will only reset that one
+        await DBManager.execute("UPDATE servers SET player_count = 0, availability = 0 WHERE name = $1", "MN0")
+        await DBManager.execute("UPDATE channels SET player_count = 0")
 
         # Support both asyncpg ("DELETE N") and aiosqlite (int rowcount)
         if isinstance(result, int):
@@ -438,7 +482,7 @@ class ChannelManager:
     async def get_channels_for_server(cls, server_id):
         """Return a list of Channel objects for this server_id."""
         rows = await DBManager.fetch(
-            "SELECT id, server_id, channel_index, player_count FROM channels WHERE server_id = $1;",
+            "SELECT id, server_id, channel_index, player_count FROM channels WHERE server_id = $1 ORDER BY channel_index ASC",
             server_id
         )
         return [Channel.from_row(row) for row in rows]
@@ -473,10 +517,18 @@ class ChannelManager:
 
     @classmethod
     async def increment_player_count(cls, server_id, channel_index):
-        await DBManager.execute(
-            "UPDATE channels SET player_count = player_count + 1 WHERE server_id = $1 AND channel_index = $2;",
-            server_id, channel_index
-        )
+        if dbtype == "postgres":
+            await DBManager.execute("""
+                UPDATE channels 
+                SET player_count = LEAST(player_count + 1, 80) 
+                WHERE server_id = $1 AND channel_index = $2;
+            """, server_id, channel_index)
+        else: # sqlite
+            await DBManager.execute("""
+                UPDATE channels 
+                SET player_count = MIN(player_count + 1, 80) 
+                WHERE server_id = ? AND channel_index = ?;
+            """, server_id, channel_index)
 
     @classmethod
     async def decrement_player_count(cls, server_id, channel_index):
@@ -604,6 +656,13 @@ class LobbyManager:
                     player_id, assigned_character, assigned_status, lobby.id
                 )
                 print(f"[DB] Added player {player_id} to lobby '{lobby_name}' (slot {idx}, char {assigned_character}).")
+                # Edge case: Assign leader if currently missing (should only happen if DB is altered from external source)
+                if not lobby.leader:
+                    await DBManager.execute(
+                        "UPDATE lobbies SET leader = $1 WHERE id = $2",
+                        player_id, lobby.id
+                    )
+                    print(f"[LOBBY FIX] Lobby '{lobby_name}' had no leader — assigned {player_id} as new leader.")
                 return True
         print(f"[WARN] No empty player slot in lobby '{lobby_name}'")
         return False
@@ -1365,7 +1424,9 @@ async def handle_client_packet(session, data):
         return
 
     response = None
-    await update_last_packet_time(session) 
+    list_request = {0x07d3, 0x07e0}
+    if pkt_id not in list_request:
+        await update_last_packet_time(session) 
 
     # --- Login ---
     if pkt_id == 0x07d0:
@@ -1437,9 +1498,19 @@ async def handle_client_packet(session, data):
     elif pkt_id == 0x07d3:
         # The server is now tracked in session['server'] or session['server_id']
         server_id = session.get('server_id')
+        channel_index = session.get("channel_index")
         if not server_id:
             print(f"[ERROR] Could not determine server for session {session['addr']}")
             return
+        # Only increment server count once per session
+        if not session.get('server_counted'):
+            await ServerManager.increment_player_count(server_id)
+            session['server_counted'] = True
+        # Decrement channel player count 
+        if channel_index is not None:
+            await ChannelManager.decrement_player_count(server_id, channel_index)
+            session['channel_index'] = None
+        # Send response
         response = await build_channel_list_packet(server_id)
         await send_packet_to_client(session, response, note="[CHANNEL LIST]")
 
@@ -1467,7 +1538,9 @@ async def handle_client_packet(session, data):
         # Save per-session state for later packets
         session['player_id'] = player_id
         session['channel_index'] = channel_index
-
+        # Increment Channel Player Count
+        await ChannelManager.increment_player_count(server_id, channel_index)
+        # Send response
         response = build_channel_join_ack(success=True)
         await send_packet_to_client(session, response, note="[CHANNEL JOIN]")
 
@@ -2111,6 +2184,7 @@ async def full_disconnect(session):
     server_id = session.get('server_id')
     channel_index = session.get('channel_index')
     player_index = session.get('player_index')
+    server_counted = session.get('server_counted')
 
     channel_db_id = None
     if server_id is not None and channel_index is not None:
@@ -2167,6 +2241,13 @@ async def full_disconnect(session):
                     print(f"Unknown Lobby Status: {status}")
         else:
             print(f"[DISCONNECT] Lobby '{lobby_name}' deleted after last player left.")
+
+    # === DECREMENT COUNTS ===
+    if server_id is not None and channel_index is not None:
+        await ChannelManager.decrement_player_count(server_id, channel_index)
+
+    if server_counted == True and server_id is not None:
+        await ServerManager.decrement_player_count(server_id)
 
 async def admin_command_loop():
     print("Admin console ready. Type 'help' for commands.")
