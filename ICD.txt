@@ -1,61 +1,44 @@
 ==================================================================
                Mystic Nights Server Interface Control Document
 ==================================================================
-Version: 0.7.0
-Date:    2024-06-10
+Version: 0.9.11
+Date:    2025-07-13
 
 This document describes the binary packet protocol between the Mystic Nights
 game client and server. Packets are listed by direction, with structure
 definitions and descriptions where available.
 
-+----------------+------------------------------------------------+
-| Packet ID      | Handler Function / Description                 |
-+----------------+------------------------------------------------+
-| 0x03f5         | FUN_0020bc20                                   |
-| 0x0bc8         | FUN_00213c80       Lobby List Packet           |
-| 0x0bbb         | FUN_002112f0       Channel List Packet         |
-| 0x0bc7         | FUN_0021c910       Server List Packet          |
-| 0x0bc6         | FUN_0021e490       Map Select Ack              |
-| 0x0bc5         | FUN_0021e4c0       Character Select Ack        |
-| 0x0bc4         | FUN_0021e4f0       Character Select Setup      |
-| 0x0bc3         | FUN_0021e560       Player Kick Ack             |
-| 0x0bc2         | FUN_0021e590       Lobby Leave Ack             |
-| 0x0bc1         | FUN_0021e5c0       Player Ready Ack            |
-| 0x0bc0         | FUN_0021e5f0       Game Start Packet           |
-| 0x0bbf         | FUN_00213c50       Lobby Join Ack              |
-| 0x0bbe         | FUN_00213c50       Lobby Join Ack              |
-| 0x0bbd         | FUN_002120f0       Lobby Create Ack            |
-| 0x0bbc         | FUN_002112c0       Channel Join Ack            |
-| 0x0bba         | FUN_00219ed0       Account Create/Delete Ack   |
-| 0x0bb9         | FUN_00219ed0       Account Create/Delete Ack   |
-| 0x0bb8 (3000)  | FUN_00203cf0       Login Ack                   |
-| 0x03ee         | FUN_0021e6c0       Lobby Data Packet           |
-| 0x03e9         | FUN_0011cd30                                   |
-+----------------+------------------------------------------------+
-
 ==================================================================
 I.  Client -> Server Packets
 ==================================================================
 
-+--------------------------+----------+--------------------+------------------------------------------------+
-| Packet Name              | PacketID | Structure Defined? | Description                                    |
-+--------------------------+----------+--------------------+------------------------------------------------+
-| Account Create           | 0x07d1   | Yes                | Client requests new account creation.          |
-| Channel Join             | 0x07d4   | Partial            | Client requests to join a channel.             |
-| Channel List Request     | 0x07d3   | No                 | Client requests list of channels.              |
-| Lobby Create Request     | 0x07d5   | Partial            | Client requests creation of a new lobby.       |
-| Lobby Join Request       | 0x07d6   | Partial            | Client requests to join an existing lobby.     |
-| Game Start Request       | 0x07d8   | Partial            | Client requests to start the game.       
-| Game Start Request       | 0x07d9   | Yes                | Client requests to toggle player ready status. |
-| Lobby List Request       | 0x07e0   | No                 | Client requests multiplayer lobby list.        |
-| Login Request            | 0x07d0   | No                 | Client requests to log in.                     |
-| Server List Request      | 0x07df   | No                 | Client requests list of servers.               |
-| Lobby Leave Request      | 0x07da   | Yes                | Client requests for player to leave the lobby. |
-| Kick Player Request      | 0x07db   | Yes                | Client requests another player to be kicked.   |
-| Character Select Query   | 0x07dc   | Yes                | Client requests info for character selection.  |
-| Character Select Commit  | 0x07dd   | Yes                | Client commits character selection.            |
-| Map Select Request       | 0x07de   | Yes                | Client requests map select in lobby.           |
-+--------------------------+----------+--------------------+------------------------------------------------+
++--------------------------+----------+-----------------------------------------+
+| Packet Name              | PacketID | Description                             |
++--------------------------+----------+-----------------------------------------+
+| Account Create           | 0x07d1   | Client requests new account creation.   |
+| Account Delete           | 0x07d2   | Client requests deletion of account.    |
+| Channel List Request     | 0x07d3   | Requests channel list, also triggers    |
+| Channel Join             | 0x07d4   | Join a channel (sets server/channel).   |
+| Lobby Create Request     | 0x07d5   | Client requests to create a lobby.      |
+| Lobby Join Request       | 0x07d6   | Client requests to join a lobby.        |
+| Quick Join Request       | 0x07d7   | Join a random public, not-full lobby.   |
+| Game Start Request       | 0x07d8   | Lobby leader requests game start.       |
+| Player Ready Request     | 0x07d9   | Non-leader player toggles ready.        |
+| Lobby Leave Request      | 0x07da   | Client requests to leave lobby.         |
+| Kick Player Request      | 0x07db   | Lobby leader requests to kick player.   |
+| Character Select Query   | 0x07dc   | Requests info for char select screen.   |
+| Character Select Commit  | 0x07dd   | Confirms char select; value=character.  |
+| Map Select Request       | 0x07de   | Lobby leader changes map in lobby.      |
+| Server List Request      | 0x07df   | Requests server list.                   |
+| Lobby List Request       | 0x07e0   | Requests lobby list for channel/server. |
+| Game Ready Check         | 0x03f0   | Client ready for Countdown.             |
+| Player Disconnect        | 0x03f1   | In-game leave/disconnect.               |
+| Game Over                | 0x03f2   | Indicates end of match, resets lobby.   |
+| Game Result/Rank Update  | 0x03f3   | Victory/defeat, triggers rank update.   |
+| Echo Reply               | 0x03ea   | Response to server echo challenge.      |
++--------------------------+----------+-----------------------------------------+
+
+Client -> Server packet structure only partially documented.
 
 --------------------------------------------------
 Account Create Request (0x07d1)
@@ -121,7 +104,7 @@ Game Start Request (0x07d8)
 
 > - The player ID is the initiating player.
 > - Sent when a player clicks "Start Game" or equivalent in the lobby menu.
-> - "Start Game" is only available in the lobby menu if the player is the lobby leader.
+> - "Start Game" is only available in the lobby menu if the player is the lobby leader (HOST).
 > - Example: `d8070d0042414241000000000000000000` ("BABA" as player_id)
 
 --------------------------------------------------
@@ -135,7 +118,7 @@ Player Ready Request (0x07d9)
 
 > - The player ID is the initiating player.
 > - Sent when a player clicks "Game Ready" or equivalent in the lobby menu.
-> - "Game Ready" is only available in the lobby menu if the player is NOT the lobby leader.
+> - "Game Ready" is only available in the lobby menu if the player is NOT the lobby leader (HOST).
 > - Example: `d9070d0042414241000000000000000000` ("BABA" as player_id)
 
 --------------------------------------------------
@@ -200,159 +183,225 @@ Map Select Request (0x07de)
 | 0x02   | 2    | uint16   | length     | Payload length (always 0x08)   |
 | 0x04   | 4    | uint32le | map_index  | Little-endian (1-5)            |
 
-> - "Map Select" is only available in the lobby menu if the player is the lobby leader.
+> - "Map Select" is only available in the lobby menu if the player is the lobby leader (HOST).
+
+--------------------------------------------------
+Echo Reply (0x03ea) 
+--------------------------------------------------
+| Offset | Size | Type     | Field         | Notes                                   |
+|--------|------|----------|---------------|-----------------------------------------|
+| 0x00   | 2    | uint16   | packet_id     | 0x03ea (reply)                          |
+| 0x02   | 2    | uint16   | payload_len   | 4                                       |
+| 0x04   | 4    | bytes    | token/flag    | Echo back whatever is sent from server  |
+
+- Sent when server sends an Echo Challenge (0x03e9).
+- No further reply expected from server for this packet.
+
 
 ==================================================================
 II.  Server -> Client Packets
 ==================================================================
 
-+-------------------------------+----------+--------------------+-----------------------------------------------+
-| Packet Name                   | PacketID | Structure Defined? | Description                                   |
-+-------------------------------+----------+--------------------+-----------------------------------------------+
-| Account Create Result         | 0x0bba/9 | Partial            | Account creation success/failure response.    |
-| Account Delete Result         | 0x0bba/9 | Partial            | Account deletion success/failure response.    |
-| Channel Join Ack              | 0x0bbc   | Yes                | Acknowledges channel join.                    |
-| Channel List Response         | 0x0bbb   | Yes                | Returns list of available channels.           |
-| Lobby Create Ack              | 0x0bbd   | Yes                | Acknowledges successful lobby creation.       |
-| Lobby Join Ack                | 0x0bbe   | Yes                | Acknowledges successful lobby join.           |
-| Lobby List Response           | 0x0bc8   | Yes                | Returns list of multiplayer lobbies.          |
-| Login Result                  | 0x0bb8   | Yes                | Login result                                  |
-| Server List Response          | 0x0bc7   | Yes                | Returns list of available servers.            |
-| Game Start Response           | 0x0bc0   | Partial            | Sent in response to Game Start request.       |
-| Player Ready Ack              | 0x0bc1   | Yes                | Sent in response to Player Ready request.     |
-| Lobby Leave Ack               | 0x0bc2   | Yes                | Acknowledges lobby leave.                     |
-| Kick Player Ack               | 0x0bc3   | Yes                | Acknowledges player kick request.             |
-| Character Select Setup        | 0x0bc4   | Yes                | Returns 1 player's info for char select.      |
-| Character Select Ack          | 0x0bc5   | Yes                | ACK for character commit.                     |
-| Map Select Ack                | 0x0bc6   | Yes                | ACK for map selection.                        |
-| Lobby Room State              | 0x03ee   | Yes                | Full lobby state including map/players.       |
-+-------------------------------+----------+--------------------+-----------------------------------------------+
++-------------------------------+----------+-----------------------------------------------+
+| Packet Name                   | PacketID | Description                                   |
++-------------------------------+----------+-----------------------------------------------+
+| Account Create Result         | 0x0bba   | Account creation result.                      |
+| Account Delete Result         | 0x0bb9   | Account deletion result.                      |
+| Channel Join Ack              | 0x0bbc   | Channel join acknowledgement.                 |
+| Channel List Response         | 0x0bbb   | List of available channels.                   |
+| Lobby Create Ack              | 0x0bbd   | Lobby creation acknowledgement.               |
+| Lobby Join Ack                | 0x0bbe   | Lobby join acknowledgement.                   |
+| Quick Join Ack                | 0x0bbf   | Acknowledges quick join.                      |
+| Lobby List Response           | 0x0bc8   | List of lobbies in channel/server.            |
+| Login Result                  | 0x0bb8   | Login result.                                 |
+| Server List Response          | 0x0bc7   | List of available servers.                    |
+| Game Start Response           | 0x0bc0   | Provides all game initialization information. |
+| Player Ready Ack              | 0x0bc1   | Non-HOST player ready state toggles.          |
+| Lobby Leave Ack               | 0x0bc2   | Acknowledges lobby leave.                     |
+| Kick Player Ack               | 0x0bc3   | Acknowledges kick player.                     |
+| Character Select Setup        | 0x0bc4   | Character select handshake start.             |
+| Character Select Ack          | 0x0bc5   | Acknowledges character selection.             |
+| Map Select Ack                | 0x0bc6   | Acknowledges map selection.                   |
+| Lobby Room State              | 0x03ee   | Full lobby state including map/players.       |
+| Player DC                     | 0x03f4   | Player Disconnect/Timeout notification.       |
+| Countdown                     | 0x03ef   | Countdown (4,3,2,1,0) before game starts.     |
+| Echo Challenge                | 0x03e9   | Echo challenge from server to client.         |
++-------------------------------+----------+-----------------------------------------------+
 
 --------------------------------------------------
-Account Create Result (0x0bba/0x0bb9)
+Account Create Result (0x0bba)
 --------------------------------------------------
-| Offset | Size | Type     | Field        | Notes                |
-|--------|------|----------|--------------|----------------------|
-| 0x00   | 2    | uint16   | packet_id    | 0x0bba or 0x0bb9     |
-| 0x02   | 2    | uint16   | payload_len  |                      |
-| 0x04   | 3    | uint8[3] | code         | 0x01 0x00 0x01/0x00  |
-FAILURE CONDITION UNKNOWN
+| Offset | Size | Type     | Field       | Notes                                              |
+|--------|------|----------|-------------|----------------------------------------------------|
+| 0x00   | 2    | uint16   | packet_id   | 0x0bba                                             |
+| 0x02   | 2    | uint16   | payload_len |                                                    |
+| 0x04   | 4/1  | uint8[4] | flag        | 0x01 00 00 00 on success, 0x00 on failure          |
+| 0x08   | 2    | uint16   | val         | 1 on success; error code on failure (see below)    |
+Error Codes (val): 9 = Account already exists.
+Example: ba 0b 06 00 01 00 00 00 01 00 (success)
 
 --------------------------------------------------
-Account Delete Result (0x0bba/0x0bb9)
+Account Delete Result (0x0bb9)
 --------------------------------------------------
-| Offset | Size | Type     | Field        | Notes                |
-|--------|------|----------|--------------|----------------------|
-| 0x00   | 2    | uint16   | packet_id    | 0x0bba or 0x0bb9     |
-| 0x02   | 2    | uint16   | payload_len  |                      |
-| 0x04   | 3    | uint8[3] | code         | 0x01 0x00 0x01/0x00  |
-FAILURE CONDITION UNKNOWN
-
---------------------------------------------------
-Channel Join Ack (0x0bbc)
---------------------------------------------------
-| Offset | Size | Type    | Field       | Notes      |
-|--------|------|---------|-------------|------------|
-| 0x00   | 2    | uint16  | packet_id   | 0x0bbc     |
-| 0x02   | 2    | uint16  | payload_len |            |
-| 0x04   | 1    | uint8   | ack         | Always 1   |
+| Offset | Size | Type     | Field       | Notes                                              |
+|--------|------|----------|-------------|----------------------------------------------------|
+| 0x00   | 2    | uint16   | packet_id   | 0x0bb9                                             |
+| 0x02   | 2    | uint16   | payload_len |                                                    |
+| 0x04   | 4/1  | uint8[4] | flag        | 0x01 00 00 00 on success, 0x00 on failure          |
+| 0x08   | 2    | uint16   | val         | 1 on success; error code on failure (see below)    |
+Error Codes (val): 4 = Database error, 7 = Incorrect password, 8 = No such player.
+Example: b9 0b 06 00 01 00 00 00 01 00 (success)
 
 --------------------------------------------------
 Channel List Response (0x0bbb)
 --------------------------------------------------
-| Offset | Size    | Type      | Field         | Notes          |
-|--------|---------|-----------|---------------|----------------|
-| 0x00   | 2       | uint16    | packet_id     | 0x0bbb         |
-| 0x02   | 2       | uint16    | payload_len   |                |
-| 0x04   | 1       | uint8     | flag          | Always 1       |
-| 0x05   | 3       | uint8[3]  | unknown       | Always 0       |
-| 0x08   | 12*12   | struct[]  | channel list  | Up to 12       |
+| Offset | Size    | Type        | Field         | Notes                                              |
+|--------|---------|-------------|---------------|----------------------------------------------------|
+| 0x00   | 2       | uint16      | packet_id     | 0x0bbb                                             |
+| 0x02   | 2       | uint16      | payload_len   | Always 0x91 (145)                                  |
+| 0x04   | 4       | uint8[4]    | flag          | 0x01 00 00 00 (success)                            |
+| 0x08   | 36×12   | struct      | channel_list  | 12 channels, see below                             |
 
-Each Channel Entry (12 bytes):
-| Offset | Size | Type    | Field        | Notes        |
-|--------|------|---------|--------------|--------------|
-| 0x00   | 4    | uint32  | index        | Channel idx  |
-| 0x04   | 4    | uint32  | cur_players  |              |
-| 0x08   | 4    | uint32  | max_players  |              |
+channel_list entry (repeats 12 times, one per channel index)
+| Offset | Size | Type   | Field         | Notes                        |
+|--------|------|--------|---------------|------------------------------|
+| +0x00  | 4    | uint32 | channel_index | Channel index, starting at 0 |
+| +0x04  | 4    | uint32 | cur_players   | Current player count         |
+| +0x08  | 4    | uint32 | max_players   | Always 80                    |
+
+**Example:**  
+bb 0b 91 00 01 00 00 00 00 00 00 00 ... (12 channel entries)
+
+--------------------------------------------------
+Channel Join Ack (0x0bbc)
+--------------------------------------------------
+| Offset | Size | Type     | Field       | Notes                                              |
+|--------|------|----------|-------------|----------------------------------------------------|
+| 0x00   | 2    | uint16   | packet_id   | 0x0bbc                                             |
+| 0x02   | 2    | uint16   | payload_len |                                                    |
+| 0x04   | 4/1  | uint8[4] | flag        | 0x01 00 00 00 on success, 0x00 (padded) on failure |
+| 0x08   | 2    | uint16   | val         | 1 on success; error code on failure (see below)    |
+
+Error Codes (val):  
+5 = Invalid server/channel.
+
+**Example:**  
+bc 0b 06 00 01 00 00 00 01 00 (success)
 
 --------------------------------------------------
 Lobby Create Ack (0x0bbd)
 --------------------------------------------------
-| Offset | Size | Type    | Field     | Notes                         |
-|--------|------|---------|-----------|-------------------------------|
-| 0x00   | 2    | uint16  | packet_id | 0x0bbd                        |
-| 0x02   | 2    | uint16  | length    | Always 0x0001                 |
-| 0x04   | 1    | uint8   | status    | Always 0x01                   |
-| 0x05   | 1    | uint8   | status    | Always 0x00                   |
-| 0x06   | 1    | uint8   | status    | Always 0x01                   |
+| Offset | Size | Type    | Field     | Notes                                                 |
+|--------|------|---------|-----------|-------------------------------------------------------|
+| 0x00   | 2    | uint16  | packet_id | 0x0bbd                                                |
+| 0x02   | 2    | uint16  | length    |                                                       |
+| 0x04   | 4/1  | bytes   | status    | 0x01 0x00 0x00 0x00 = success; 0x00 = failure         |
+| 0x08   | 2    | uint16  | value     | Success: idx_in_channel; Failure: error code          |
 
-> Example (hex): `bd0b010001`
+> On success, value is the lobby idx_in_channel (0–19).
+> On failure, value indicates the error code:
+>   0x10 = Lobby name already exists
+>   0x0d = No available lobby slots
+>   0x05 = Invalid/missing parameter
+
+> Example (success, idx_in_channel = 3): `bd0b0600 01000000 0300`
+> Example (failure, lobby exists):         `bd0b0600 00 1000`
 
 --------------------------------------------------
 Lobby Join Ack (0x0bbe)
 --------------------------------------------------
-| Offset | Size | Type    | Field     | Notes                         |
-|--------|------|---------|-----------|-------------------------------|
-| 0x00   | 2    | uint16  | packet_id | 0x0bbe                        |
-| 0x02   | 2    | uint16  | length    | Always 0x0001                 |
-| 0x04   | 1    | uint8   | status    | Always 0x01                   |
-| 0x05   | 1    | uint8   | status    | Always 0x00                   |
-| 0x06   | 1    | uint8   | status    | Always 0x01                   |
+| Offset | Size | Type    | Field     | Notes                                                 |
+|--------|------|---------|-----------|-------------------------------------------------------|
+| 0x00   | 2    | uint16  | packet_id | 0x0bbe                                                |
+| 0x02   | 2    | uint16  | length    |                                                       |
+| 0x04   | 4/1  | bytes   | status    | 0x01 0x00 0x00 0x00 = success; 0x00 = failure         |
+| 0x08   | 2    | uint16  | value     | Success: idx_in_channel; Failure: error code (see below) |
 
-> Example (hex): `be0b010001`
+> On success, value is the lobby idx_in_channel (0–19).
+> On failure, value indicates the error code:
+>   0x0f = Lobby does not exist
+>   0x0e = Game already started
+>   0x0a = Lobby full
+>   0x05 = Invalid parameter
+>   0x04 = Database error
+
+> Example (success, idx_in_channel = 4): `be0b0600 01000000 0400`
+> Example (failure, lobby full):           `be0b0600 00 0a00`
+
+--------------------------------------------------
+Lobby Quick Join Ack (0x0bbf)
+--------------------------------------------------
+| Offset | Size | Type    | Field     | Notes                                                 |
+|--------|------|---------|-----------|-------------------------------------------------------|
+| 0x00   | 2    | uint16  | packet_id | 0x0bbf                                                |
+| 0x02   | 2    | uint16  | length    |                                                       |
+| 0x04   | 4/1  | bytes   | status    | 0x01 0x00 0x00 0x00 = success; 0x00 = failure         |
+| 0x08   | 2    | uint16  | value     | Success: idx_in_channel; Failure: error code (see below) |
+
+> On success, value is the lobby idx_in_channel (0–19).
+> On failure, value indicates the error code:
+>   0x0d = No available lobbies to join
+>   0x05 = Invalid server/channel
+>
+> Example (success, idx_in_channel = 2):  `bf0b0600 01000000 0200`
+> Example (failure, no public lobby):     `bf0b0600 00 0d00`
 
 --------------------------------------------------
 Lobby List Response (0x0bc8)
 --------------------------------------------------
-| Offset | Size    | Type      | Field         | Notes            |
-|--------|---------|-----------|---------------|------------------|
-| 0x00   | 2       | uint16    | packet_id     | 0x0bc8           |
-| 0x02   | 2       | uint16    | payload_len   |                  |
-| 0x04   | 1       | uint8     | flag          | Always 1         |
-| 0x05   | 3       | uint8[3]  | unknown       | Always 0         |
-| 0x08   | 44*20   | struct[]  | lobby entries | Up to 20 lobbies |
+| Offset | Size | Type     | Field          | Notes                                |
+|--------|------|----------|----------------|--------------------------------------|
+| 0x00   | 4    | bytes    | flag           | Always 0x01 00 00 00                 |
+| 0x04   | 44   | struct   | lobbies[20]    | See below; 20 entries, 44 bytes each |
 
-Each Lobby Entry (44 bytes):
-| Offset | Size | Type      | Field      | Notes                                             |
-|--------|------|-----------|------------|---------------------------------------------------|
-| 0x00   | 4    | uint32    | room_id    |                                                   |
-| 0x04   | 4    | uint32    | cur_players|                                                   |
-| 0x08   | 4    | uint32    | max_players|                                                   |
-| 0x0C   | 16   | char[16]  | name       | EUC-KR, padded 0x00                               |
-| 0x1C   | 1    | uint8     | pad1       | Always 0                                          |
-| 0x1D   | 12   | char[12]  | password   | EUC-KR, padded 0x00, empty=public, filled=private |
-| 0x29   | 1    | uint8     | pad2       | Always 0                                          |
-| 0x2A   | 1    | uint8     | status     | 0=Empty, 1=Waiting, 2=Started                     |
-| 0x2B   | 1    | uint8     | pad3       | Always 0                                          |
+Each lobby entry (44 bytes):
+| Offset | Size | Type      | Field         | Notes                             |
+|--------|------|-----------|---------------|-----------------------------------|
+| 0x00   | 4    | uint32    | idx_in_chan   | Lobby index in channel            |
+| 0x04   | 4    | uint32    | player_count  | Players in lobby (0-4)            |
+| 0x08   | 4    | uint32    | max_players   | Always 4                          |
+| 0x0C   | 16   | char[16]  | name          | euc-kr, null-padded               |
+| 0x1C   | 1    | uint8     | pad1          | Always 0x00                       |
+| 0x1D   | 12   | char[12]  | password      | euc-kr, null-padded               |
+| 0x29   | 1    | uint8     | pad2          | Always 0x00                       |
+| 0x2A   | 1    | uint8     | status        | 0=empty, 1=waiting, 2=started     |
+| 0x2B   | 1    | uint8     | pad3          | Always 0x00                       |
+
+> Example (hex, first lobby):
+> `01 00 00 00 00 00 00 00 02 00 00 00 04 00 00 00 4c 6f 62 62 79 31 ... 00 00 ...`
 
 --------------------------------------------------
 Login Result (0x0bb8)
 --------------------------------------------------
-| Offset | Size | Type     | Field       | Notes               |
-|--------|------|----------|-------------|---------------------|
-| 0x00   | 2    | uint16   | packet_id   | 0x0bb8              |
-| 0x02   | 2    | uint16   | payload_len |                     |
-| 0x04   | 3    | uint8[3] | code        | 0x01 0x00 0x01/0x00 |
+| Offset | Size | Type    | Field      | Notes                                    |
+|--------|------|---------|------------|------------------------------------------|
+| 0x00   | 2    | uint16  | packet_id  | 0x0bb8                                   |
+| 0x02   | 2    | uint16  | length     | Always 0x0006 (6 bytes payload)          |
+| 0x04   | 4/1  | bytes   | status     | 0x01 00 00 00 = success                  |
+|        |      |         |            | 0x00           = failure                 |
+| 0x08   | 2    | uint16  | reason     | 1 = success; see code for error values   |
+
+-reason varies for failures (e.g., 7 = incorrect password, 8 = user not found, etc.).
+> Example (success, hex): `b8 0b 06 00 01 00 00 00 01 00`
+> Example (failure, hex): `b8 0b 06 00 00 07 00`
+
 
 --------------------------------------------------
 Server List Response (0x0bc7)
 --------------------------------------------------
-| Offset | Size    | Type      | Field      | Notes          |
-|--------|---------|-----------|------------|----------------|
-| 0x00   | 2       | uint16    | packet_id  | 0x0bc7         |
-| 0x02   | 2       | uint16    | payload_len|                |
-| 0x04   | 1       | uint8     | flag       | Always 1       |
-| 0x05   | 3       | uint8[3]  | unknown    | Always 0       |
-| 0x08   | 44*10   | struct[]  | servers    | Up to 10       |
+| Offset | Size | Type     | Field           | Notes                                 |
+|--------|------|----------|-----------------|---------------------------------------|
+| 0x00   | 4    | bytes    | flag            | Always 0x01 00 00 00                  |
+| 0x04   | 44   | struct   | servers[10]     | See below; 10 entries, 44 bytes each  |
 
-Each Server Entry (44 bytes):
-| Offset | Size | Type      | Field      | Notes                |
-|--------|------|-----------|------------|----------------------|
-| 0x00   | 16   | char[16]  | name       | EUC-KR, padded 0x00  |
-| 0x10   | 5    | uint8[5]  | reserved   | 0x00                 |
-| 0x15   | 16   | char[16]  | ip_ascii   | ASCII IP+null, pad   |
-| 0x25   | 3    | uint8[3]  | reserved2  | 0x00                 |
-| 0x28   | 4    | int32     | avail      | -1, 0, 1, 2          |
+Each server entry (44 bytes):
+| Offset | Size | Type      | Field         | Notes                                 |
+|--------|------|-----------|---------------|---------------------------------------|
+| 0x00   | 16   | char[16]  | name          | euc-kr, null-padded                   |
+| 0x10   | 5    | uint8[5]  | reserved1     | Always 0x00                           |
+| 0x15   | 16   | char[16]  | ip_address    | ASCII ("x.x.x.x\0"), null-padded      |
+| 0x25   | 3    | uint8[3]  | reserved2     | Always 0x00                           |
+| 0x28   | 4    | int32     | availability  | -1=offline, 0=low, 1=med, 2=high      |
 
 --------------------------------------------------
 Character Select Setup (0x0bc4)
@@ -380,105 +429,186 @@ Player Block (28 bytes; see also 03ee):
 --------------------------------------------------
 Game Start Response (0x0bc0)
 --------------------------------------------------
-| Offset | Size | Type      | Field        | Notes                                           |
-|--------|------|-----------|--------------|-------------------------------------------------|
-| 0x00   | 2    | uint16    | packet_id    | Always 0x0bc0                                   |
-| 0x02   | 2    | uint16    | payload_len  | Typically 0x0016 (22) or 0x0018 (24)            |
-| 0x04   | 4    | uint8[4]  | flag         | Always 0x01 0x00 0x00 0x00                      |
-| 0x08   | 0x10 | bytes     | player_id    | Copied from request, 0x10 bytes (padded with 0) |
-| 0x18   | 2    | uint16    | param_3      | (uncertain meaning)                             |
-| 0x1A   | 2    | uint16    | param_4      | (uncertain meaning)                             |
-| 0x1C   | 2    | int16     | param_5      | (uncertain meaning)                             |
+| Offset | Size | Type      | Field          | Notes                                                |
+|--------|------|-----------|----------------|------------------------------------------------------|
+| 0x00   | 2    | uint16    | packet_id      | Always 0x0bc0                                        |
+| 0x02   | 2    | uint16    | payload_len    | Always 0x001a (26)                                   |
+| 0x04   | 4    | uint8[4]  | flag           | Always 0x01 0x00 0x00 0x00                           |
+| 0x08   | 16   | struct    | start_positions| 4 * (1 byte pos + 3 byte padding), total 16 bytes    |
+| 0x18   | 2    | uint16    | vampire_id     | Player index (0–3) selected as vampire               |
+| 0x1A   | 2    | uint16    | padding1       | Always 0x0000                                        |
+| 0x1C   | 2    | uint16    | vampire_gender | 0 = female, 1 = male (randomized each match)         |
+| 0x1E   | 2    | uint16    | padding2       | Always 0x0000                                        |
+| 0x20   | 2    | uint16    | map_id         | 1–4, randomly chosen if map set to random            |
 
-> - The client expects a 16 byte payload. Sending the player_id with padding for now...
-> - Example response (for "BABA"):
->   `c00b180001000000424142410000000000000000000000000000000000000000`
+Notes:
+- `start_positions` contains 4 unique random start positions (each 0–11), each as 1 byte followed by 3 bytes padding (total 16 bytes).
+- `vampire_id` is the slot index (0–3) of the player selected as vampire for this round.
+- `vampire_gender` is randomized each match and does **not** correlate with the character model.
+- `map_id` is randomly selected if the lobby used the “random” map option; otherwise, it is the map selected in lobby.
 
 --------------------------------------------------
 Player Ready Ack (0x0bc1)
 --------------------------------------------------
-| Offset | Size | Type     | Field     | Notes                       |
-|--------|------|----------|-----------|-----------------------------|
-| 0x00   | 2    | uint16   | packet_id | 0x0bc1                      |
-| 0x02   | 2    | uint16   | length    | Always 0x0006               |
-| 0x04   | 4    | uint8[4] | flag      | Always 0x01 00 00 00        |
-| 0x08   | 2    | uint16   | status    | Always 0x0001               |
+| Offset | Size | Type     | Field       | Notes                                       |
+|--------|------|----------|-------------|---------------------------------------------|
+| 0x00   | 2    | uint16   | packet_id   | Always 0x0bc1                               |
+| 0x02   | 2    | uint16   | payload_len |                                             |
+| 0x04   | 4/1  | uint8[4] | flag        | 0x01 0x00 0x00 0x00 if success, else 0x00   |
+| 0x08   | 2    | uint16   | val         | 0x0001 if success, error code if failure    |
 
-> - The client expects a follow-up updated lobby room packet with the corresponding player's status toggled. 
+> - Sent by server in response to a player's "Ready/Unready" request in lobby.
+> - `val` is usually 1 on success, otherwise indicates an error code (e.g. 5 = invalid, 1 = malformed).
 
 --------------------------------------------------
 Lobby Leave Ack (0x0bc2)
 --------------------------------------------------
-| Offset | Size | Type     | Field     | Notes                       |
-|--------|------|----------|-----------|-----------------------------|
-| 0x00   | 2    | uint16   | packet_id | 0x0bc2                      |
-| 0x02   | 2    | uint16   | length    | Always 0x0006               |
-| 0x04   | 4    | uint8[4] | flag      | Always 0x01 00 00 00        |
-| 0x08   | 2    | uint16   | status    | Always 0x0001               |
+| Offset | Size | Type     | Field       | Notes                                       |
+|--------|------|----------|-------------|---------------------------------------------|
+| 0x00   | 2    | uint16   | packet_id   | Always 0x0bc2                               |
+| 0x02   | 2    | uint16   | payload_len |                                             |
+| 0x04   | 4/1  | uint8[4] | flag        | 0x01 0x00 0x00 0x00 if success, else 0x00   |
+| 0x08   | 2    | uint16   | val         | 0x0001 if success, error code if failure    |
+
+> - Sent by server when a player leaves a lobby (either by request or on disconnect).
+> - `val` is usually 1 on success, otherwise indicates an error code (e.g. 1 = malformed request).
+
 
 --------------------------------------------------
 Kick Player Ack (0x0bc3)
 --------------------------------------------------
-| Offset | Size | Type     | Field     | Notes                       |
-|--------|------|----------|-----------|-----------------------------|
-| 0x00   | 2    | uint16   | packet_id | 0x0bc3                      |
-| 0x02   | 2    | uint16   | length    | Always 0x0006               |
-| 0x04   | 4    | uint8[4] | flag      | Always 0x01 00 00 00        |
-| 0x08   | 2    | uint16   | status    | Always 0x0001               |
+| Offset | Size | Type     | Field       | Notes                                       |
+|--------|------|----------|-------------|---------------------------------------------|
+| 0x00   | 2    | uint16   | packet_id   | Always 0x0bc3                               |
+| 0x02   | 2    | uint16   | payload_len |                                             |
+| 0x04   | 4/1  | uint8[4] | flag        | 0x01 0x00 0x00 0x00 if success, else 0x00   |
+| 0x08   | 2    | uint16   | val         | 0x0001 if success, error code if failure    |
+
+> - Sent by the server to the player who was kicked AND to the initiator (lobby leader).
+> - `val` is usually 1 on success, otherwise indicates an error code (e.g. 1 = malformed request).
 
 --------------------------------------------------
 Character Select Ack (0x0bc5)
 --------------------------------------------------
-| Offset | Size | Type     | Field      | Notes                                    |
-|--------|------|----------|------------|------------------------------------------|
-| 0x00   | 2    | uint16   | packet_id  | 0x0bc5                                   |
-| 0x02   | 2    | uint16   | payload_len| 0x06                                     |
-| 0x04   | 1    | uint8    | flag       | Always 1                                 |
-| 0x05   | 3    | uint8[3] | unknown    | Always 0                                 |
-| 0x08   | 2    | uint16   | value      | Always 1                                 |
+| Offset | Size | Type     | Field       | Notes                                         |
+|--------|------|----------|-------------|-----------------------------------------------|
+| 0x00   | 2    | uint16   | packet_id   | Always 0x0bc5                                 |
+| 0x02   | 2    | uint16   | payload_len |                                               |
+| 0x04   | 4/1  | uint8[4] | flag        | 0x01 0x00 0x00 0x00 if success, else 0x00     |
+| 0x08   | 2    | uint16   | val         | 0x0001 if success, error code if failure      |
+
+> - Sent in response to a character selection request.
+> - `val` is usually 1 if successful, or an error code otherwise.
 
 --------------------------------------------------
 Map Select Ack (0x0bc6)
 --------------------------------------------------
-Same as 0x0bc5 but packet_id is 0x0bc6.
+| Offset | Size | Type     | Field       | Notes                                         |
+|--------|------|----------|-------------|-----------------------------------------------|
+| 0x00   | 2    | uint16   | packet_id   | Always 0x0bc6                                 |
+| 0x02   | 2    | uint16   | payload_len |                                               |
+| 0x04   | 4/1  | uint8[4] | flag        | 0x01 0x00 0x00 0x00 if success, else 0x00     |
+| 0x08   | 2    | uint16   | val         | 0x0001 if success, error code if failure      |
+
+> - Sent in response to a map selection request.
+> - `val` is typically 0x0001 on success, or an error code (e.g. 0x0005) on failure.
 
 --------------------------------------------------
 Lobby Room State (0x03ee)
 --------------------------------------------------
 | Offset | Size    | Type      | Field         | Notes                                  |
 |--------|---------|-----------|---------------|----------------------------------------|
-| 0x00   | 2       | uint16    | packet_id     | 0x03ee                                 |
-| 0x02   | 2       | uint16    | payload_len   | 0x9c                                   |
-| 0x04   | 1       | uint8     | lobby_leader  | 0,1,2,3                                |
-| 0x05   | 3       | uint8[3]  | padding       | Always 0                               |
-| 0x08   | 16      | char[16]  | lobby_name    | EUC-KR, padded 0x00                    |
-| 0x18   | 16      | uint8[16] | unknown       | Always 0                               |
-| 0x28   | 28*4    | struct[]  | players       | Up to 4                                |
+| 0x00   | 2       | uint16le  | packet_id     | 0x03ee                                 |
+| 0x02   | 2       | uint16le  | payload_len   | Always 0x9c (156 bytes)                |
+| 0x04   | 1       | uint8     | lobby_leader  | Player slot index of leader (0-3)      |
+| 0x05   | 3       | uint8[3]  | padding       | Always 0x00                            |
+| 0x08   | 16      | char[16]  | lobby_name    | EUC-KR encoding, padded with 0x00      |
+| 0x18   | 16      | uint8[16] | unknown1      | Always 0x00                            |
+| 0x28   | 28*4    | struct[]  | players       | Up to 4 player blocks, see below       |
 | 0x98   | 4       | uint32le  | map_select    | 1-5                                    |
-| 0x9c   | 4       | uint32le  | lobby_flag    | Usually 1                              |
+| 0x9c   | 4       | uint32le  | lobby_flag    | Lobby status: 1 = waiting, 2 = started |
+
+--------------------------------------------------
+Player DC (0x03f4)
+--------------------------------------------------
+| Offset | Size | Type      | Field         | Notes                                |
+|--------|------|-----------|---------------|--------------------------------------|
+| 0x00   | 2    | uint16le  | packet_id     | 0x03f4                               |
+| 0x02   | 2    | uint16le  | payload_len   | Always 0x04                          |
+| 0x04   | 1    | uint8     | player_index  | Player slot index (0–3)              |
+| 0x05   | 3    | uint8[3]  | padding       | Always 0x00                          |
+
+-Notifies all players that a player has disconnected.
+-If the vampire/traitor disconnects, the vampire will be controlled by AI. (the game does not end)
+-If the host disconnects, another player acts as host for enemy AI movement broadcasting. 
+-This packet is also sent before the countdown packet to each player with their own player_index, as if notifying them that they themselves have disconnected. This is unlikely to be an intended secondary use of the packet but seems to be the only way I have figured out to get the countdown to trigger reliably 100% of the time.
+
+--------------------------------------------------
+Countdown (0x03ef)
+--------------------------------------------------
+| Offset | Size | Type      | Field         | Notes                                |
+|--------|------|-----------|---------------|--------------------------------------|
+| 0x00   | 2    | uint16le  | packet_id     | 0x03ef                               |
+| 0x02   | 2    | uint16le  | payload_len   | Always 0x01                          |
+| 0x04   | 1    | uint8     | number        | Countdown number (4, 3, 2, 1, 0)     |
+
+-Draws a number on screen for countdown at start of game (this is after the Game Start packet is broadcasted to all players and all players succeed an echo challenge).
+
+--------------------------------------------------
+Echo Challenge (0x03e9)
+--------------------------------------------------
+| Offset | Size | Type      | Field         | Notes                                |
+|--------|------|-----------|---------------|--------------------------------------|
+| 0x00   | 2    | uint16le  | packet_id     | 0x03e9                               |
+| 0x02   | 2    | uint16le  | payload_len   | Always 0x04                          |
+| 0x04   | 4    | uint8[4]  | payload       | Echo payload (default: 01 00 00 00)  |
+
+-Challenge the client to echo back the 4-byte payload. If no reply is received, we can disconnect them and perform cleanup.
 
 Player Block (see above).
+==================================================================
+III.  Bidirectional Packets
+==================================================================
 
-==================================================================
-Character/Map Select Protocol (v0.6.6)
-==================================================================
-- For character select, the client will loop sending 0x07dc packets (one per player).
-- The server must reply to each 0x07dc with a 0x0bc4 containing the exact player’s info.
-- Once the user chooses a character and presses confirm, the client sends a 0x07dd with the new character value.
-- Server must ACK with 0x0bc5, then immediately update the relevant player’s character field and send a new 0x03ee lobby room packet.
-- Map select uses a nearly identical handshake: 0x07de → 0x0bc6 → 0x03ee (with updated map_idx).
+All Gameplay packets start with high byte 0x13. 
+These packets are bidirectional and are initially sent from the client and meant to be broadcasted to players in the same active game. 
+Some packets are meant to be broadcasted to all players including self (ex: enemy death animation will not play and vampire will not despawn if not self-broadcasted).
+Others should not be self-broadcasted as they cause unwanted double triggers (ex: player attack causes double the amount of ammunition to be used when shooting and double the amount of mags to be used when reloading if self-broadcasted).
 
-==================================================================
-Notes
-==================================================================
-- All packets start with a 2-byte packet ID and 2-byte payload length (little-endian).
-- "Yes" under "Structure Defined?" means a struct is present in the code.
-- "No" means only the ID is checked; usually just a request header.
-- Unused fields/padding are typically 0x00.
-- Multi-entry responses (server/channel/lobby lists) are padded with blank entries.
-- Strings are EUC-KR or ASCII, zero-padded.
-- Lobby structure on server tracks: room_id, name, password, max_players, current_players, and players (list of player IDs).
-- If password is empty, lobby is public; otherwise, private.
-- When a player joins a lobby, current_players is incremented. If full, join is rejected.
-- Lobby status: 0 = Empty, 1 = Waiting, 2 = Started.
-- Fields are always padded with 0x00 (never 0x11).
+Player Movement (0x1388)
+--------------------------------------------------
+| Offset | Size | Type     | Field         | Notes                         |
+|--------|------|----------|---------------|-------------------------------|
+| 0x00   | 2    | uint16   | packet_id     | 0x1388                        |
+| 0x02   | 2    | uint16   | payload_len   | 24                            |
+| 0x04   | 4    | float32  | y_pos         |                               |
+| 0x08   | 4    | float32  | x_pos         |                               |
+| 0x0C   | 4    | float32  | player_heading|                               |
+| 0x10   | 4    | float32  | cam_heading   |                               |
+| 0x14   | 2    | bytes    | unknown1      |                               |
+| 0x16   | 1    | uint8    | left_right    |                               |
+| 0x17   | 1    | uint8    | up_down       |                               |
+| 0x18   | 4    | bytes    | player_idx    | Player index (slot 0–3?)      |
+
+Gameplay Broadcast (0x13xx)
+--------------------------------------------------
+- 0x13xx packets (where xx varies):  
+  - 0x139c: Incident proximity scan (not self-broadcasted)
+  - 0x138c: Player attack (not self-broadcasted)
+  - 0x1390: Enemy attack (not self-broadcasted)
+  - 0x1394: Enemy movement (broadcasted to all)
+  - Others: Default to full lobby broadcast
+
+--------------------------------------------------
+NOTES AND DESIGN CLARIFICATIONS
+--------------------------------------------------
+- All client/server packets are little-endian, with 2-byte packet_id, 2-byte payload length.
+- Echo check (0x03e9/0x03ea) is now robust: both keepalive and readycheck challenges are supported, with tokens and status-tracking per session.
+- Player DC packet (0x03f4) is sent for disconnected/lost slots, during readycheck or after echo timeout.
+- Countdown packets (0x03ef) are sent 4,3,2,1,0 before game start, after all players are marked READY or DC'd.
+- Lobby leader is always correctly re-assigned if NULL after removal, per DB logic.
+- Full disconnect (kick, leave, or timeout) will always update lobby and broadcast to others.
+- All lists (server/channel/lobby) are zero-padded to fixed maximum entries.
+- Player movement and most gameplay events are always relayed to all other players in the lobby, except certain types as noted above.
+- Rank points are updated via 0x03f3: +5 for victory, +2 for defeat.
+- Quick Join finds a random public, open, waiting lobby and sends a matching ack (0x0bbf).

@@ -13,7 +13,7 @@ import random
 import aioconsole
 
 print("------------------------------------")
-print("Mystic Nights Private Server v0.9.10")
+print("Mystic Nights Private Server v0.9.11")
 print("------------------------------------")
 
 # ========== CONFIG ==========
@@ -1502,10 +1502,6 @@ async def handle_client_packet(session, data):
         if not server_id:
             print(f"[ERROR] Could not determine server for session {session['addr']}")
             return
-        # Only increment server count once per session
-        if not session.get('server_counted'):
-            await ServerManager.increment_player_count(server_id)
-            session['server_counted'] = True
         # Decrement channel player count 
         if channel_index is not None:
             await ChannelManager.decrement_player_count(server_id, channel_index)
@@ -1538,6 +1534,15 @@ async def handle_client_packet(session, data):
         # Save per-session state for later packets
         session['player_id'] = player_id
         session['channel_index'] = channel_index
+        # Only increment server count once per session
+        ### We only increment Player Count on Channel Join instead of Channel List to avoid edge case where
+        ### the client disconnects before joining a channel and there is no player_id set for the session
+        ### causing echo watcher to not clean up the session and never decrement the server count. 
+        ### This is a design limitation due to the client side logic.
+        ### I'm sure a more elegant solution could be made but it is out of the scope of this project. 
+        if not session.get('server_counted'):
+            await ServerManager.increment_player_count(server_id)
+            session['server_counted'] = True
         # Increment Channel Player Count
         await ChannelManager.increment_player_count(server_id, channel_index)
         # Send response
@@ -2114,7 +2119,13 @@ async def handle_client_packet(session, data):
         # Broadcast to all players in the lobby
         if lobby_name and channel_db_id is not None:
             if pkt_id == 0x139c: # Don't self-broadcast Incident Proximity Detection
-                await broadcast_to_lobby(lobby_name, channel_db_id, data, note=f"[DETECTION EVENT {pkt_id:04x}]", cur_session=session, to_self = False)                
+                await broadcast_to_lobby(lobby_name, channel_db_id, data, note=f"[SCAN DETECTION {pkt_id:04x}]", cur_session=session, to_self = False)
+            elif pkt_id == 0x138c: # Don't self-broadcast Attacks (causes twice the amount of ammo consumed on shots and mags consumed on reload)
+                await broadcast_to_lobby(lobby_name, channel_db_id, data, note=f"[ATTACK {pkt_id:04x}]", cur_session=session, to_self = False)
+            elif pkt_id == 0x1390:
+                await broadcast_to_lobby(lobby_name, channel_db_id, data, note=f"[ENEMY ATTACK {pkt_id:04x}]", cur_session=session, to_self = False)
+            elif pkt_id == 0x1394:
+                await broadcast_to_lobby(lobby_name, channel_db_id, data, note=f"[ENEMY MOVE {pkt_id:04x}]")                         
             else:
                 await broadcast_to_lobby(lobby_name, channel_db_id, data, note=f"[GAMEPLAY BROADCAST {pkt_id:04x}]")
         else:

@@ -18,6 +18,11 @@ TBD
 TBD
 
 ## *PROGRESS
+### 0.9.11
+* No longer self-broadcasting Player/Enemy Attack packets
+  * Fixes bug where double the ammo/mags are consumed
+* Only incrementing player count of server after joining a channel at least one time.
+
 ### 0.9.10
 * Implemented Channel and Server player count tracking
   * Server player count decrementing not working if client disconnects/resets before joining a Channel.
