@@ -18,6 +18,21 @@ TBD
 TBD
 
 ## *PROGRESS
+### 0.9.12
+* The server used a flag to blindly skip the first lobby join packet after a Quick Join, leading to unreliable behavior under high latency or packet reordering (sometimes skipping too many or too few join attempts).
+  * When a player uses Quick Join, the randomly selected lobby index is now stored in the session.
+  * The server will only accept lobby join packets matching the stored lobby index. All others are ignored while Quick Join is pending.
+  * Once the correct join is processed, the pending state is cleared.
+  * If no matching join arrives within 5 seconds, the server sends an explicit error packet to the client and clears the Quick Join state.
+  * A new background coroutine (quick_join_timeout_watcher) handles these timeouts efficiently.
+  * Even if Quick Join fails, we block/ignore lobby joins for 1 second since client attempts to blindly join lobby 0.
+* Overriding print() function to return immediately if not DEBUG
+  * Print statements are ressource intensive and are a bottleneck when trying to scale to hundreds of concurrent client connections.
+* Removed CLIENT_GAMEPLAY_PORT from conditional checks for lobby broadcasts.
+  * The client port is NOT always 3658. It varies greatly. 
+* Disconnecting other sessions with same player_id (targeting Connection Manager 18000 session) on Channel Join
+  * Echo Watcher would cause disconnects on session with port 18000 and would incorrectly remove associated player from the lobby causing a bunch of regressions. (following removal of CLIENT_GAMEPLAY_PORT check logic)
+
 ### 0.9.11
 * No longer self-broadcasting Player/Enemy Attack packets
   * Fixes bug where double the ammo/mags are consumed

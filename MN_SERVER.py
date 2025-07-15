@@ -13,17 +13,18 @@ import random
 import aioconsole
 
 print("------------------------------------")
-print("Mystic Nights Private Server v0.9.11")
+print("Mystic Nights Private Server v0.9.12")
 print("------------------------------------")
 
 # ========== CONFIG ==========
 
-HOST = '211.233.10.5'
+HOST = '211.233.10.5' # DEFAULT IP
 TCP_PORT = 18000
 SERVER_PORT = 18001
-CLIENT_GAMEPLAY_PORT = 3658
+# CLIENT_GAMEPLAY_PORT = 3658
 DB_POOL = None
-DEBUG = 1
+# DEBUG FLAG SHOULD BE 0 IN PRODUCTION 
+DEBUG = 1 
 ### ECHO WATCHER
 WATCHER_SLEEP_TIME = 1
 ECHO_TIMEOUT = 20
@@ -47,6 +48,12 @@ if DEBUG == 2:
     logging.basicConfig(filename="trace.log", level=logging.DEBUG)
     logging.getLogger("importlib").setLevel(logging.WARNING)
     logging.getLogger("asyncio").setLevel(logging.WARNING)
+
+# Override print to return if DEBUG is None or 0
+def print(*args, **kwargs):
+    if not DEBUG:
+        return
+    __builtins__.print(*args, **kwargs)
 
 def get_postgres_dsn():
     # Fallback to sensible defaults if env vars are missing
@@ -1405,7 +1412,8 @@ async def broadcast_to_lobby(lobby_name, channel_db_id, payload, note="", cur_se
     async with sessions_lock:
         targets = [
             s for s in sessions.values()
-            if s.get("player_id") in target_ids and s['addr'][1] == CLIENT_GAMEPLAY_PORT
+            #if s.get("player_id") in target_ids and s['addr'][1] == CLIENT_GAMEPLAY_PORT
+            if s.get("player_id") in target_ids
         ]
 
     # Use asyncio.gather to send to all clients concurrently
@@ -1531,6 +1539,14 @@ async def handle_client_packet(session, data):
         else:
             print(f"[ERROR] Channel join for unknown player: {player_id}")
 
+        # Disconnect any existing session(s) for this player_id (Connection Manager 18000 session)
+        async with sessions_lock:
+            sessions_snapshot = list(sessions.values())
+        for s in sessions_snapshot:
+            if s.get('player_id') == player_id and not s.get('removed'):
+                print(f"[CHANNEL JOIN] Player {player_id} : Disconnecting other session.")
+                await full_disconnect(s)
+
         # Save per-session state for later packets
         session['player_id'] = player_id
         session['channel_index'] = channel_index
@@ -1593,13 +1609,30 @@ async def handle_client_packet(session, data):
         channel_index = session.get('channel_index')
         channel_db_id = await ChannelManager.get_channel_db_id(server_id, channel_index)
 
+        # --- BLOCK RAPID LOBBY JOIN ATTEMPTS (Quick Join - No Lobbies Available)---
+        block_until = session.get('lobby_join_block_until')
+        if block_until and time.time() < block_until:
+            print(f"[LOBBY JOIN] Blocked join attempt for 1 second after quick join fail.")
+            return # Ignore
+        session.pop('lobby_join_block_until', None)  # Clear after use
+
+        # --- QUICK JOIN ROBUST HANDLING ---
+        if 'quick_join_lobby_idx' in session:
+            requested_lobby = await LobbyManager.get_lobby_by_name(lobby_name, channel_db_id)
+            expected_idx = session['quick_join_lobby_idx']
+            # Compare by idx, and also by name (paranoia, but idx is key)
+            if not requested_lobby or requested_lobby.idx_in_channel != expected_idx:
+                print(f"[QUICK JOIN] Ignored lobby join to '{lobby_name}' (idx {requested_lobby.idx_in_channel if requested_lobby else '???'}), expected idx {expected_idx}")
+                return  # Ignore
+            else:
+                print(f"[QUICK JOIN] Correct lobby join for expected idx {expected_idx}.")
+                # Allow this join and clear the session vars now
+                session.pop('quick_join_lobby_idx', None)
+                session.pop('quick_join_lobby_name', None)
+                session.pop('quick_join_time', None)
+
         success = False
         val = 1  # Default (idx)
-
-        # --- QUICK JOIN HANDLING ---
-        if session.pop('quick_join_pending', False):
-            print(f"[LOBBY JOIN][QUICK JOIN] Ignoring FIRST 0x07d6 after quick join for {player_id}")
-            return
 
         if channel_db_id is None or player is None:
             print(f"[ERROR] Invalid channel or player missing. server_id={server_id}, channel_index={channel_index}, player={player_id}")
@@ -1646,7 +1679,6 @@ async def handle_client_packet(session, data):
                 print(f"[WARNING] Could not cache player_index for {player_id} in lobby {lobby_name}")
             room_packet = await build_lobby_room_packet(lobby_name, channel_db_id)
             await broadcast_to_lobby(lobby_name, channel_db_id, room_packet, note="LOBBY ROOM UPDATE")
-            #send_packet_to_client(session, room_packet, note="[LOBBY ROOM INFO]")
 
     # --- Quick Join ---
     elif pkt_id == 0x07d7:
@@ -1655,8 +1687,7 @@ async def handle_client_packet(session, data):
             response = build_lobby_quick_join_ack(success=False, val=1)
             await send_packet_to_client(session, response, note="[QUICK JOIN FAIL]")
             return
-        
-        session['quick_join_pending'] = True # Session flag for subsequent lobby join
+
         player_id = data[4:12].decode('ascii').rstrip('\x00')
         print(f"[QUICK JOIN] Request from player_id={player_id}")
 
@@ -1680,21 +1711,28 @@ async def handle_client_packet(session, data):
         # Filter: public, not full, status == 1 (waiting)
         available = [
             lobby for lobby in lobbies
-            if not lobby.password  # public
-            and lobby.player_count < 4
-            and lobby.status == 1  # waiting for players
+        	if not lobby.password  # public
+        	and lobby.player_count < 4
+        	and lobby.status == 1  # waiting for players
         ]
         print(f"[QUICK JOIN] {len(available)} public, not full lobbies found.")
 
         if not available:
-            # No lobbies available
+        	# No lobbies available
             response = build_lobby_quick_join_ack(success=False, val=0x0d)
+            # --- BLOCK LOBBY JOINS FOR 1 SECOND ---
+            session['lobby_join_block_until'] = time.time() + 1.0
             await send_packet_to_client(session, response, note="[QUICK JOIN NO LOBBY]")
             return
 
         # Pick a random lobby
         lobby = random.choice(available)
         lobby_name = lobby.name
+
+        # Store the expected lobby index and time in session for robust join check
+        session['quick_join_lobby_idx'] = lobby.idx_in_channel
+        session['quick_join_lobby_name'] = lobby.name
+        session['quick_join_time'] = time.time()
 
         print(f"[QUICK JOIN] Player {player_id} request to join lobby '{lobby_name}' (idx {lobby.idx_in_channel})")
         response = build_lobby_quick_join_ack(success=True, val=lobby.idx_in_channel)
@@ -1797,7 +1835,8 @@ async def handle_client_packet(session, data):
                         async with sessions_lock:
                             targets = [
                                 s for s in sessions.values()
-                                if s.get("player_id") == kicked_player_id and s['addr'][1] == CLIENT_GAMEPLAY_PORT
+                                #if s.get("player_id") == kicked_player_id and s['addr'][1] == CLIENT_GAMEPLAY_PORT
+                                if s.get("player_id") == kicked_player_id
                             ]
                         # Release lock before any awaits
 
@@ -1933,7 +1972,8 @@ async def handle_client_packet(session, data):
                 if not pid or pid == player_id:
                     continue
                 active = any(
-                    s.get("player_id") == pid and s['addr'][1] == CLIENT_GAMEPLAY_PORT
+                    #s.get("player_id") == pid and s['addr'][1] == CLIENT_GAMEPLAY_PORT
+                    s.get("player_id") == pid
                     for s in sessions_snapshot
                 )
                 d = lobby_echo_results.setdefault(key, {})
@@ -1958,7 +1998,8 @@ async def handle_client_packet(session, data):
                     if not pid:
                         continue
                     for s in sessions_snapshot:
-                        if s.get("player_id") == pid and s['addr'][1] == CLIENT_GAMEPLAY_PORT:
+                        #if s.get("player_id") == pid and s['addr'][1] == CLIENT_GAMEPLAY_PORT:
+                        if s.get("player_id") == pid:
                             dc_packet = build_dc_packet(idx)
                             tasks.append(send_packet_to_client(s, dc_packet, note=f"[EXPERIMENTAL DC SELF {idx}]"))
                             break
@@ -2291,6 +2332,22 @@ async def admin_command_loop():
         except KeyboardInterrupt:
             break
 
+async def quick_join_timeout_watcher():
+    # Run periodically to check all sessions for quick join timeouts
+    while True:
+        now = time.time()
+        async with sessions_lock:
+            for session in list(sessions.values()):
+                if 'quick_join_lobby_idx' in session and 'quick_join_time' in session:
+                    elapsed = now - session['quick_join_time']
+                    if elapsed > 5:
+                        print(f"[QUICK JOIN TIMEOUT] No valid join received after 5s, sending error to {session.get('addr')}")
+                        error_packet = build_lobby_join_ack(success=False, val=0x02)  # An error occured during transmission
+                        await send_packet_to_client(session, error_packet, note="[QUICK JOIN TIMEOUT]")
+                        session.pop('quick_join_lobby_idx', None)
+                        session.pop('quick_join_lobby_name', None)
+                        session.pop('quick_join_time', None)
+        await asyncio.sleep(1)
 
 async def echo_watcher():
     while True:
@@ -2303,8 +2360,8 @@ async def echo_watcher():
             if not player_id:
                 continue
             # Only send echo to gameplay clients
-            if session['addr'][1] != CLIENT_GAMEPLAY_PORT:
-                continue
+            #if session['addr'][1] != CLIENT_GAMEPLAY_PORT:
+            #    continue
             if session.get('countdown_in_progress', False):
                 continue
 
@@ -2418,6 +2475,8 @@ async def main():
     asyncio.create_task(gameplay_server.serve_forever())
     # Echo Watcher
     asyncio.create_task(echo_watcher())
+    # Quick Join Timeout Watcher
+    asyncio.create_task(quick_join_timeout_watcher())
     # Optionally start admin command loop
     asyncio.create_task(admin_command_loop())
     # Wait forever
