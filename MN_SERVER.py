@@ -12,19 +12,19 @@ import sqlite3
 import random
 import aioconsole
 
-print("------------------------------------")
-print("Mystic Nights Private Server v0.9.12")
-print("------------------------------------")
+print("-------------------------------------")
+print(" Mystic Nights Private Server v1.0.0 ")
+print("-------------------------------------")
 
 # ========== CONFIG ==========
-
-HOST = '211.233.10.5' # DEFAULT IP
+# HOST = '211.233.10.5' # ISO ORIGINAL IP
+HOST = '207.148.21.93'
 TCP_PORT = 18000
 SERVER_PORT = 18001
 # CLIENT_GAMEPLAY_PORT = 3658
 DB_POOL = None
 # DEBUG FLAG SHOULD BE 0 IN PRODUCTION 
-DEBUG = 1 
+DEBUG = 0 
 ### ECHO WATCHER
 WATCHER_SLEEP_TIME = 1
 ECHO_TIMEOUT = 20
@@ -954,7 +954,7 @@ async def build_channel_list_packet(server_id):
         entries.append(struct.pack('<III', cid, cur_players, max_players))
     payload = flag + b''.join(entries)
     header = struct.pack('<HH', packet_id, len(payload))
-    if DEBUG:
+    if DEBUG == 3:
         await ChannelManager.print_channel_table(server_id)
     return header + payload
 
@@ -1057,7 +1057,7 @@ async def build_lobby_list_packet(server_id, channel_index):
 
     payload = flag + b''.join(entries)
     header = struct.pack('<HH', packet_id, len(payload))
-    if DEBUG:
+    if DEBUG == 3:
         await LobbyManager.print_lobby_table(channel_db_id)
     return header + payload
 
@@ -1083,7 +1083,7 @@ async def build_server_list_packet():
     entries = b''.join(servers)
     payload = flag + entries
     header = struct.pack('<HH', packet_id, len(payload))
-    if DEBUG:
+    if DEBUG == 3:
         await ServerManager.print_server_table()
     return header + payload
 
@@ -1539,11 +1539,11 @@ async def handle_client_packet(session, data):
         else:
             print(f"[ERROR] Channel join for unknown player: {player_id}")
 
-        # Disconnect any existing session(s) for this player_id (Connection Manager 18000 session)
+        # Disconnect any OTHER existing session(s) for this player_id (Connection Manager 18000 session)
         async with sessions_lock:
             sessions_snapshot = list(sessions.values())
         for s in sessions_snapshot:
-            if s.get('player_id') == player_id and not s.get('removed'):
+            if s.get('player_id') == player_id and not s == session and not s.get('removed'):
                 print(f"[CHANNEL JOIN] Player {player_id} : Disconnecting other session.")
                 await full_disconnect(s)
 

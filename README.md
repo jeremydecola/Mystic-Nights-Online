@@ -1,23 +1,228 @@
 # Mystic Nights (PS2) Multiplayer Private Server
 
 Mystic Nights (미스틱 나이츠) is an obscure Korean-Exclusive survival horror Playstation 2 title.
-It was developed by N-Log Corporation and published by Sony Computer Entertainment of Korea in 2005.
-Although a North-American release was planned, Sony mysteriously pulled the plug.
+It was developed by N-LOG Soft and published by Sony Computer Entertainment Korea in 2005.
+Although a North-American release was planned, the game was never localized.
 
 This project's goal is to revive the Online Multiplayer functionality of the game by reverse-engineering the expected packet replies required from the server. This is achieved through examination of the client side packet parsing code through Ghidra decompilation (MIPS 5900 to C), analysis of values at target memory addresses in EE and IOP RAM (using PCSX2 Debugger) during different game states and some careful packet fuzzing.
 
-In 2019, I released an English translation for Mystic Nights. It can be found here. 
+If you like my work, feel free to show your support: https://ko-fi.com/jeremydecola
+
+I'm hosting my server for a limited time!
+
+For more information check out : https://jeremydecola.github.io/Mystic-Nights-Archive/multiplayer.html
+
+# Connect to an Existing server
+
+Patch the Mystic Nights iso with my latest English Translation patch:
 https://github.com/jeremydecola/Mystic-Nights-Translation/tree/master
+
+## 1. PCSX2/DEV9 Setup (for Online Play)
+
+- **PCSX2** emulator ([PCSX2.net](https://pcsx2.net/)) with **DEV9** network plugin.
+- Open the "Network & HDD" menu in PCSX2. Make sure Ethernet is enabled. Select Ethernet Device Type: Sockets or PCAP Bridged. Then, select the name of the adapter you use to access the internet. (Something like "Ethernet"). 
+
+## 2. Patch the Mystic Nights ISO so that it connects to the Private Server
+1. Find the IP address of the server you want to connect to.
+2. **Patch Mystic Nights ISO** with server IP address (use the provided patch_ip.py).
+- IMPORTANT: The patch_ip.py tool doesn't work with the original untranslated Mystic Nights iso. If you would like to use that one, you will have to hex edit the IP address manually.
+- Note: My latest v1.2 translation patch already patches the IP address to the PUBLIC IP of my server.
+
+## 3. Set up Network Configuration on PS2 Memory Card.
+1. Boot up Mystic Nights in PCSX2 and Navigate to NETWORK GAME from the main menu.
+2. Follow the guide on the Mystic Nights Archive website: https://jeremydecola.github.io/Mystic-Nights-Archive/multiplayer.html
+
+# Host the server yourself
 
 ## Prerequisites
 
-TBD
+Patch the Mystic Nights iso with my latest English Translation patch:
+https://github.com/jeremydecola/Mystic-Nights-Translation/tree/master
 
-## Instructions
+### 1. Python Environment
 
-TBD
+- **Python 3.9+**\
+  [Download Python](https://www.python.org/downloads/)
+
+### 2. Database (Choose One)
+
+- **SQLite 3** (Default — easy, local, no setup required)
+- **PostgreSQL 13+** (Advanced/production, optional)
+
+### 3. Python Libraries
+
+Install required Python packages:
+
+```sh
+pip install asyncpg aiosqlite aioconsole
+```
+
+Or using `requirements.txt`:
+
+```sh
+pip install -r requirements.txt
+```
+
+**Contents of requirements.txt:**
+
+```
+asyncpg
+aiosqlite
+aioconsole
+```
+
+### 4.1 PCSX2/DEV9 Setup (for Online Play)
+
+- **PCSX2** emulator ([PCSX2.net](https://pcsx2.net/)) with **DEV9** network plugin.
+- Open the "Network & HDD" menu in PCSX2. Make sure Ethernet is enabled. Select Ethernet Device Type: Sockets or PCAP Bridged. Then, select the name of the adapter you use to access the internet. (Something like "Ethernet"). 
+
+### 4.2 PCSX2/DEV9 Setup (for Local Play)
+
+- **PCSX2** emulator ([PCSX2.net](https://pcsx2.net/)) with **DEV9** network plugin.
+- Create a **TAP** network adapter: 
+  - **Windows:** Install [OpenVPN](https://openvpn.net/) or [TAP-Windows driver](https://swupdate.openvpn.org/community/releases/tap-windows-9.24.2.exe)
+  - **Linux:** `sudo apt install uml-utilities` and create a tap device using `tunctl` or `ip tuntap`
+- See [PCSX2 DEV9 Setup Guide](https://pcsx2.net/docs/) for bridging instructions.
+- Open the "Network & HDD" menu in PCSX2. Make sure Ethernet is enabled. Select Ethernet Device Type: TAP. Then, select the TAP adapter that you created. 
+
+---
+
+## Instructions (Windows & Linux)
+
+### A. Server Setup
+
+#### 1. Clone or Download the Project
+
+```sh
+git clone https://github.com/jeremydecola/Mystic-Nights-Private-Server.git
+cd Mystic-Nights-Private-Server
+```
+
+#### 2. Database Configuration
+
+**SQLite (Default, easiest):**
+
+- No manual setup needed.
+- On first launch, `mysticnights.db` is created automatically and schema loaded from `mn_sqlite_schema.sql`.
+- *(Optional)* To specify a custom database file, set the `SQLITE_FILE` environment variable.
+
+**PostgreSQL (Advanced/Production):**
+
+1. Create a PostgreSQL database and user.
+2. Import the schema:
+   ```sh
+   psql -U youruser -d yourdb -f mn_postgres_schema.sql
+   ```
+3. Set environment variables as described below.
+
+**SUPER IMPORTANT**
+
+**The DATABASE contains a SERVERS table which holds the IP address of the 10 servers that are available to connect to. When you chose the first server in the list and try to log on, it then tries to establish a TCP session with the IP address associated to server 1. You must update the ip_address in the database to match your HOST (Server) IP.**
+
+#### 3. Environment Variables
+
+Set these before running the server (SQLite):
+
+| Variable        | Description                | Example                              |
+| --------------- | -------------------------- | ------------------------------------ |
+| `DB_TYPE`       | `"sqlite"` or `"postgres"` | `DB_TYPE=sqlite`                     |
+| `SQLITE_FILE`   | SQLite DB file name (opt)  | `SQLITE_FILE=mysticnights.db`        |
+| `SQLITE_SCHEMA` | SQLite schema file (opt)   | `SQLITE_SCHEMA=mn_sqlite_schema.sql` |
+
+Set these before running the server (PostgreSQL):
+
+| Variable        | Description                | Example                              |
+| --------------- | -------------------------- | ------------------------------------ |
+| `DB_TYPE`       | `"sqlite"` or `"postgres"` | `DB_TYPE=postgres`                   |
+| `PG_HOST`       | Postgres host              | `PG_HOST=localhost`                  |
+| `PG_DBNAME`     | Postgres DB name           | `PG_DBNAME=mysticnights`             |
+| `PG_USER`       | Postgres username          | `PG_USER=postgres`                   |
+| `PG_PASSWORD`   | Postgres password          | `PG_PASSWORD=secret`                 |
+
+
+**On Windows:**\
+Set variables in Command Prompt for the current session:
+
+```cmd
+set DB_TYPE=sqlite
+set SQLITE_FILE=mysticnights.db
+```
+
+**On Linux/macOS:**
+
+```sh
+export DB_TYPE=sqlite
+export SQLITE_FILE=mysticnights.db
+```
+
+#### 4. Run the Server
+
+```sh
+python mn_server.py
+```
+
+- By default, the server listens on ports `18000` and `18001` (change in source if needed).
+- Admin commands are available from the console after launch.
+- The DEBUG variable can be used to print logs for troubleshooting purposes. Set the global variable DEBUG = 1 in the code. In production DEBUG should be set back to 0 as printing can be quite ressource intensive when we have multiple concurrent client connections.
+- If you plan to host a server, you should probably run this as a service instead.
+
+#### 5. Connecting from PCSX2 (Gameplay)
+
+1. **Patch Mystic Nights ISO** with server IP address (use the provided patch_ip.py).
+2. **Configure DEV9 plugin** in PCSX2:
+   - **Exactly 1 PCSX2 client:** Set up a TAP adapter and bind DEV9 to it in the "Network & HDD" menu of PCSX2. Modify the properties of the TAP adapter so that the IP address corresponds to the IP of the server that your games are trying to connect to (the IP that is hardcoded in the HOST global variable in the server code and the same IP that you patched in with patch_ip.py). 
+   - **More than 1 PCSX2 client:** Set up a unique TAP adapter for each PCSX2 instance you wish to run - bind each DEV9 of each PCSX2 instance to a different TAP adapter in the "Network & HDD" menu. Then, bridge your TAP adapters together. Example in Windows using Microsoft "Network Bridge". All of the TAP adapters can't have their IPv4 addresses changed once they're part of the "Network Bridge". Modify the properties of the "Network Bridge" so that the IP address corresponds to the IP of the server that your games are trying to connect to (the IP that is hardcoded in the HOST global variable in the server code and the same IP that you patched in with patch_ip.py). 
+3. **Connect in-game**: Use the Multiplayer/Online menu in Mystic Nights.
+
+#### 6. Server Usage
+
+- Player registration, login, lobby creation/join, and game synchronization are all handled by the server.
+- Disconnects, lobbies, and player stats (rank/score) are auto-managed in real-time.
+- The admin console allows sending raw packets and shutting down gracefully.
+
+---
+
+## Troubleshooting
+- **Do your IP addresses match everywhere?**
+  - The IP set in MN_SERVER.py - HOST global variable
+  - The server IP in the .iso (run patch_ip.py)
+  - ip_adress field in the database SERVERS table
+- **Firewall Issues:**
+  - Ensure inbound TCP traffic to ports 18000 and 18001 is allowed.
+  - On Windows, **allow PCSX2 and Python through your firewall**.
+  - On Linux, use `ufw allow 18000:18001/tcp` or equivalent.
+- **DEV9/TAP Adapter Not Working:**
+  - Ensure TAP adapter is enabled and bridged to your main connection.
+  - Check PCSX2 logs for network plugin errors.
+- **Database Problems:**
+  - For SQLite: Ensure the folder is writable and `mn_sqlite_schema.sql` exists.
+  - For PostgreSQL: Verify credentials and connectivity. Use `psql` to test login.
+- **Other Issues:**
+  - Run Python with elevated permissions if necessary (Windows: Run as Administrator; Linux: use `sudo` only if needed).
+  - Set `DEBUG=1` for verbose output (edit the `mn_server.py` source).
+
+---
+
+## License & Credits
+
+- **Reverse engineering, code, and server:** Jeremy De Cola
+- **Translation patch:** Jeremy De Cola
+- **Mystic Nights** © N-Log Corporation, SCE Korea, 2005
+- This project is non-commercial, for preservation/educational use only.
+
+---
+
+## Contact & Community
+
+For questions, bug reports, or to join the project, open an [issue](https://github.com/jeremydecola/Mystic-Nights-Private-Server/issues) or contact jeremydecola on GitHub.
 
 ## *PROGRESS
+
+### 1.0.0
+Public release.
+* Fixed 18000 session cleanup regression.
+* Cleanup and improved README
+
 ### 0.9.12
 * The server used a flag to blindly skip the first lobby join packet after a Quick Join, leading to unreliable behavior under high latency or packet reordering (sometimes skipping too many or too few join attempts).
   * When a player uses Quick Join, the randomly selected lobby index is now stored in the session.

@@ -1,0 +1,3 @@
+asyncpg
+aiosqlite
+aioconsole
