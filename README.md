@@ -183,6 +183,8 @@ python mn_server.py
 - The admin console allows sending raw packets and shutting down gracefully.
 
 ---
+## Limitations
+- **The DNAS Bypass only works once. If you exit NETWORK GAME or get logged out for whatever reason, reset your PCSX2 instance to get passed DNAS CHECK again.**
 
 ## Troubleshooting
 - **Do your IP addresses match everywhere?**
@@ -210,6 +212,7 @@ python mn_server.py
 - **Reverse engineering, code, and server:** Jeremy De Cola
 - **Translation patch:** Jeremy De Cola
 - **Mystic Nights** © N-Log Corporation, SCE Korea, 2005
+- MIT License. Please don't forget to credit me when re-using my code.
 - This project is non-commercial, for preservation/educational use only.
 
 ---
