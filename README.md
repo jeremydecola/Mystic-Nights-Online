@@ -1,5 +1,7 @@
 # Mystic Nights (PS2) Multiplayer Private Server
 
+This is an Open-Source Private Server for the Playstation 2 video game Mystic Nights, written in Python and reverse-engineered from the client binaries.
+
 Mystic Nights (미스틱 나이츠) is an obscure Korean-Exclusive survival horror Playstation 2 title.
 It was developed by N-LOG Soft and published by Sony Computer Entertainment Korea in 2005.
 Although a North-American release was planned, the game was never localized.
